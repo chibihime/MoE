@@ -1,0 +1,20 @@
+# Ignore data files and folders
+/db/
+physio_features.csv
+audio_features.csv
+*.csv
+*.dat
+*.ipynb_checkpoints/
+*__pycache__/
+.venv/
+src/data/__pycache__
+runs/
+src/checkpoints/
+*checkpoints/
+*.pt
+*.pth
+*.ckpt
+data/
+checkpoints/
+*.wav
+*.mp4
