@@ -397,11 +397,10 @@ class MoEFusionLayer(nn.Module):
         fused = (w * expert_stack).sum(dim=1)       # [B, embed_dim]
 
         # --- Emotion predictions ---
-        predictions = self.output_heads(fused)      # dict of [B, 1] tensors
-        predictions["gate_weights"] = gate_weights  # attach for logging
-
-        return predictions
-
+        return {
+        "fused": fused,
+        "gate_weights": gate_weights
+    }
     # ------------------------------------------------------------------
     # Auxiliary: Load Balance Loss
     # ------------------------------------------------------------------
