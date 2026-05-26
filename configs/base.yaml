@@ -1,0 +1,33 @@
+project:
+  name: "MoE Emotion Predictor"
+  version: "0.1.0"
+  language: "ja"
+
+paths:
+  data_dir: "data/"
+  model_dir: "models/"
+  output_dir: "outputs/"
+  log_dir: "logs/"
+  checkpoint_dir: "outputs/checkpoints/"
+
+emotions:
+  classes: ["happy", "sad", "angry", "neutral", "anxious", "surprised", "disgusted"]
+  num_classes: 7
+  continuous:
+    valence: { min: 1, max: 9 }
+    arousal: { min: 1, max: 9 }
+
+inference:
+  audio_modes: ["stream", "file"]
+  stream:
+    sample_rate: 16000
+    chunk_duration_ms: 500
+    buffer_duration_s: 3
+    hop_duration_ms: 250
+  file:
+    supported_formats: ["wav", "mp3", "flac", "m4a"]
+    max_duration_s: 30
+    resample_to: 16000
+
+device: "cpu"                          # override to "cuda" or "mps" as needed
+seed: 42
