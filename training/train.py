@@ -5,16 +5,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 """
 training/train.py
 
-Optimised training loop — uses cached encoder features when available.
-
-Step 1 (run once):  python training/cache_features.py   (~10 min)
-Step 2 (training):  python training/train.py            (~1-2 min/epoch)
-
-When cache exists, encoders are bypassed entirely each step.
-Only router + fusion + heads (~3M params) are trained.
+Phase 1: python training/train.py            (frozen encoders, uses cache)
+Phase 2: python training/train.py --phase2   (unfrozen top layers, raw data, 25 steps/epoch)
 """
 
 import argparse, random, time
+from collections import Counter
 from itertools import cycle
 from pathlib import Path
 
@@ -37,29 +33,39 @@ from models.multimodal.moe import MoEEmotionModel
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-def load_config(config_dir: str) -> dict:
+def load_config(config_dir):
     merged = {}
     for name in ("base", "model", "train"):
         with open(Path(config_dir) / f"{name}.yaml") as f:
             merged.update(yaml.safe_load(f))
     return merged
 
-
-def set_seed(seed: int):
+def set_seed(seed):
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
 
+def cache_exists():
+    return all((FEATURE_DIR / f"{ds}_{sp}.pt").exists()
+               for ds in ("wrime", "ravdess")
+               for sp in ("train", "validation", "test"))
 
-def cache_exists() -> bool:
-    required = [
-        FEATURE_DIR / "wrime_train.pt",
-        FEATURE_DIR / "ravdess_train.pt",
-        FEATURE_DIR / "wrime_validation.pt",
-        FEATURE_DIR / "ravdess_validation.pt",
-        FEATURE_DIR / "wrime_test.pt",
-        FEATURE_DIR / "ravdess_test.pt",
-    ]
-    return all(p.exists() for p in required)
+
+# ── Class weights ──────────────────────────────────────────────────────────────
+
+def compute_class_weights(loaders, device):
+    counts = Counter()
+    for mod in ("wrime", "ravdess"):
+        for batch in loaders["train"][mod]:
+            counts.update(batch["label"].tolist())
+    total = sum(counts.values())
+    weights = torch.zeros(NUM_CLASSES)
+    for i in range(NUM_CLASSES):
+        weights[i] = total / (NUM_CLASSES * max(counts.get(i, 1), 1))
+    weights = weights / weights.mean()
+    print("Class weights:")
+    for i, (cls, w) in enumerate(zip(EMOTION_CLASSES, weights)):
+        print(f"  {cls:12s} {w:.3f}  (n={counts.get(i,0):,})")
+    return weights.to(device)
 
 
 # ── Metrics ────────────────────────────────────────────────────────────────────
@@ -73,7 +79,6 @@ def build_metrics(device):
         "rmse_aro":    MeanSquaredError(squared=False).to(device),
     }
 
-
 def compute_metrics(m):
     return {
         "f1_macro":     m["f1_macro"].compute().item(),
@@ -86,18 +91,15 @@ def compute_metrics(m):
 
 # ── Batch forward ──────────────────────────────────────────────────────────────
 
-def process_batch(batch, model, device, config, metrics):
+def process_batch(batch, model, device, config, metrics, class_weights=None):
     clf_w = config["training"]["loss"]["classification_weight"]
     reg_w = config["training"]["loss"]["regression_weight"]
-
     def d(x): return x.to(device, non_blocking=True) if x is not None else None
 
     labels  = d(batch["label"])
     valence = d(batch["valence"])
     arousal = d(batch["arousal"])
 
-    # Cached path: features already computed
-    # Raw path:    input_ids / audio_values present instead
     kwargs = {}
     if "text_features" in batch:
         kwargs["text_features"]  = d(batch["text_features"])
@@ -112,27 +114,33 @@ def process_batch(batch, model, device, config, metrics):
     loss_dict = model.head.compute_loss(
         outputs, labels, valence, arousal,
         clf_weight=clf_w, reg_weight=reg_w,
+        class_weights=class_weights,
     )
-
     pred = outputs["predicted_class"]
     metrics["f1_macro"].update(pred, labels)
     metrics["f1_weighted"].update(pred, labels)
     metrics["accuracy"].update(pred, labels)
     metrics["rmse_val"].update(outputs["valence"].float(), valence.float())
     metrics["rmse_aro"].update(outputs["arousal"].float(), arousal.float())
-
     return loss_dict["total"]
 
 
 # ── Train epoch ────────────────────────────────────────────────────────────────
 
-def train_epoch(model, loaders, optimizer, scheduler, device, config, writer, epoch, gs):
+def train_epoch(model, loaders, optimizer, scheduler,
+                device, config, writer, epoch, gs, class_weights, phase2=False):
     model.train()
-    metrics   = build_metrics(device)
-    clip      = config["training"]["gradient_clip"]
-    log_n     = config["training"]["log_every_n_steps"]
-    accum     = config["training"].get("grad_accumulation_steps", 1)
-    max_steps = config["training"].get("max_steps_per_epoch", None)
+    metrics = build_metrics(device)
+    clip    = config["training"]["gradient_clip"]
+    log_n   = config["training"]["log_every_n_steps"]
+    accum   = config["training"].get("grad_accumulation_steps", 1)
+
+    if phase2:
+        max_steps = config["training"].get("phase2_max_steps", 25)
+        rav_ratio = config["training"].get("phase2_ravdess_ratio", 0)
+    else:
+        max_steps = config["training"].get("max_steps_per_epoch", None)
+        rav_ratio = config["training"].get("ravdess_ratio", 1)
 
     wrime_it   = cycle(loaders["train"]["wrime"])
     ravdess_it = cycle(loaders["train"]["ravdess"])
@@ -146,8 +154,14 @@ def train_epoch(model, loaders, optimizer, scheduler, device, config, writer, ep
                 leave=False, dynamic_ncols=True)
 
     for step in pbar:
-        batch = next(wrime_it) if step % 2 == 0 else next(ravdess_it)
-        loss  = process_batch(batch, model, device, config, metrics)
+        if rav_ratio == 0:
+            batch = next(wrime_it)
+        elif (step % (rav_ratio + 1)) < rav_ratio:
+            batch = next(ravdess_it)
+        else:
+            batch = next(wrime_it)
+
+        loss = process_batch(batch, model, device, config, metrics, class_weights)
         (loss / accum).backward()
 
         if (step + 1) % accum == 0:
@@ -159,7 +173,6 @@ def train_epoch(model, loaders, optimizer, scheduler, device, config, writer, ep
                          lr=f"{scheduler.get_last_lr()[0]:.1e}")
         if gs[0] % log_n == 0:
             writer.add_scalar("train/loss_step", loss.item(), gs[0])
-            writer.add_scalar("train/lr", scheduler.get_last_lr()[0], gs[0])
         gs[0] += 1
 
     res = compute_metrics(metrics)
@@ -172,18 +185,16 @@ def train_epoch(model, loaders, optimizer, scheduler, device, config, writer, ep
 # ── Eval epoch ─────────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def eval_epoch(model, loaders, split, device, config, writer, epoch):
+def eval_epoch(model, loaders, split, device, config, writer, epoch, class_weights):
     model.eval()
     metrics = build_metrics(device)
     total_loss, total_batches = 0.0, 0
-
     for mod in ("wrime", "ravdess"):
         for batch in tqdm(loaders[split][mod],
                           desc=f"Ep {epoch:02d} [{split}/{mod}]",
                           leave=False, dynamic_ncols=True):
-            loss = process_batch(batch, model, device, config, metrics)
+            loss = process_batch(batch, model, device, config, metrics, class_weights)
             total_loss += loss.item(); total_batches += 1
-
     res = compute_metrics(metrics)
     res["loss"] = total_loss / max(total_batches, 1)
     for k, v in res.items():
@@ -198,6 +209,7 @@ def save_ckpt(model, optimizer, scheduler, epoch, metrics, path):
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "metrics": metrics}, path)
+    print(f"  Saved → {path.name}")
 
 
 class EarlyStopping:
@@ -205,7 +217,6 @@ class EarlyStopping:
         self.patience = patience; self.mode = mode
         self.best = float("-inf") if mode == "max" else float("inf")
         self.counter = 0; self.triggered = False
-
     def step(self, v):
         improved = (self.mode == "max" and v > self.best) or \
                    (self.mode == "min" and v < self.best)
@@ -216,15 +227,33 @@ class EarlyStopping:
         return improved
 
 
+# ── Unfreeze top encoder layers (phase 2) ─────────────────────────────────────
+
+def unfreeze_top_layers(model, n_layers=2):
+    for encoder, name in [(model.text_encoder, "BERT"),
+                          (model.audio_encoder, "Wav2Vec2")]:
+        try:
+            layers = encoder.encoder.encoder.layer
+        except AttributeError:
+            layers = encoder.encoder.encoder.layers
+        for layer in layers[-n_layers:]:
+            for p in layer.parameters():
+                p.requires_grad = True
+        for p in encoder.projection.parameters():
+            p.requires_grad = True
+        n = sum(p.numel() for p in encoder.parameters() if p.requires_grad)
+        print(f"  {name}: top {n_layers} layers unfrozen ({n:,} params)")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/")
-    parser.add_argument("--device", default=None)
-    parser.add_argument("--resume", default=None)
-    parser.add_argument("--no-cache", action="store_true",
-                        help="Force raw dataloaders even if cache exists")
+    parser.add_argument("--config",   default="configs/")
+    parser.add_argument("--device",   default=None)
+    parser.add_argument("--resume",   default=None)
+    parser.add_argument("--phase2",   action="store_true")
+    parser.add_argument("--no-cache", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -244,29 +273,36 @@ def main():
     log_dir  = Path(config["paths"]["log_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=str(log_dir))
+    writer = SummaryWriter(log_dir=str(log_dir) + ("_p2" if args.phase2 else "_p1"))
 
     # ── DataLoaders ────────────────────────────────────────────────────────────
-    use_cache = cache_exists() and not args.no_cache
+    use_cache = cache_exists() and not args.no_cache and not args.phase2
     if use_cache:
-        print("Cache found — using pre-computed features (fast mode)")
-        batch_size = config["training"].get("cached_batch_size", 512)
-        loaders = build_cached_dataloaders(batch_size=batch_size)
+        print("Phase 1 — cached features (fast)")
+        loaders = build_cached_dataloaders(
+            batch_size=config["training"].get("cached_batch_size", 512)
+        )
     else:
-        print("No cache — using raw dataloaders (run cache_features.py for speed)")
-        print("Hint: python training/cache_features.py")
+        print(f"Phase {'2' if args.phase2 else '1'} — raw dataloaders")
         loaders = build_dataloaders(
-            config, num_workers=0,
-            pin_memory=(device.type == "cuda"),
+            config, num_workers=0, pin_memory=(device.type == "cuda")
         )
 
     # ── Model ──────────────────────────────────────────────────────────────────
-    print("Initialising MoEEmotionModel...")
+    print("Initialising model...")
     model = MoEEmotionModel(config).to(device)
 
-    # In cached mode, freeze both encoders — training only touches
-    # router + fusion + heads
-    if use_cache:
+    if args.phase2:
+        p1_ckpt = ckpt_dir / "best.pt"
+        if p1_ckpt.exists():
+            print(f"Loading phase 1 weights from {p1_ckpt}")
+            model.load_state_dict(
+                torch.load(p1_ckpt, map_location=device)["model"]
+            )
+        n_unfreeze = config["training"].get("phase2_unfreeze_layers", 1)
+        print(f"Unfreezing top {n_unfreeze} encoder layer(s)...")
+        unfreeze_top_layers(model, n_layers=n_unfreeze)
+    elif use_cache:
         for p in model.text_encoder.parameters():  p.requires_grad = False
         for p in model.audio_encoder.parameters(): p.requires_grad = False
 
@@ -274,23 +310,34 @@ def main():
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Trainable: {n_train:,} / {n_total:,} ({100*n_train/n_total:.1f}%)")
 
+    # ── Class weights ──────────────────────────────────────────────────────────
+    class_weights = compute_class_weights(loaders, device)
+
     # ── Optimiser ──────────────────────────────────────────────────────────────
-    tc      = config["training"]
-    accum   = tc.get("grad_accumulation_steps", 1)
-    max_s   = tc.get("max_steps_per_epoch", None)
-    n_base  = max(len(loaders["train"]["wrime"]),
-                  len(loaders["train"]["ravdess"]))
+    tc     = config["training"]
+    accum  = tc.get("grad_accumulation_steps", 1)
+    epochs = tc.get("phase2_epochs", 10) if args.phase2 else tc["epochs"]
+    lr_div = tc.get("phase2_lr_divisor", 40)
+    lr     = tc["learning_rate"] / lr_div if args.phase2 else tc["learning_rate"]
+
+    if args.phase2:
+        max_s = tc.get("phase2_max_steps", 25)
+    else:
+        max_s = tc.get("max_steps_per_epoch", None)
+
+    n_base   = max(len(loaders["train"]["wrime"]),
+                   len(loaders["train"]["ravdess"]))
     steps_ep = min(n_base, max_s) if max_s else n_base
-    total_s  = (steps_ep // accum) * tc["epochs"]
+    total_s  = (steps_ep // accum) * epochs
 
     optimizer = AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=tc["learning_rate"], weight_decay=tc["weight_decay"],
+        lr=lr, weight_decay=tc["weight_decay"],
     )
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=tc["warmup_steps"],
-        num_training_steps=total_s,
+        num_warmup_steps=min(tc["warmup_steps"], total_s // 10),
+        num_training_steps=max(total_s, 1),
     )
 
     start_epoch, gs = 1, [0]
@@ -300,62 +347,59 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         start_epoch = ckpt["epoch"] + 1
-        print(f"Resumed from epoch {ckpt['epoch']}")
 
-    es_cfg  = tc["early_stopping"]
-    stopper = EarlyStopping(es_cfg["patience"], es_cfg["mode"])
-    primary = es_cfg["metric"].replace("val_", "")
+    es_cfg    = tc["early_stopping"]
+    stopper   = EarlyStopping(es_cfg["patience"], es_cfg["mode"])
+    primary   = es_cfg["metric"].replace("val_", "")
+    best_name = "best_p2.pt" if args.phase2 else "best.pt"
 
-    mode_str = "CACHED (fast)" if use_cache else "RAW (slow — run cache_features.py)"
-    print(f"\nMode            : {mode_str}")
-    print(f"Steps/epoch     : {steps_ep}  |  Epochs: {tc['epochs']}")
-    print(f"Batch size      : {tc['batch_size'] if not use_cache else tc.get('cached_batch_size', 512)}"
-          f"  (effective: ×{accum})")
-    print(f"Trainable params: {n_train:,}\n")
+    print(f"\n{'='*50}")
+    print(f"Phase        : {'2 (fine-tune)' if args.phase2 else '1 (frozen)'}")
+    print(f"Epochs       : {epochs}  |  Steps/epoch: {steps_ep}")
+    print(f"LR           : {lr:.1e}  |  Batch: {tc.get('cached_batch_size',512) if use_cache else tc['batch_size']}")
+    print(f"{'='*50}\n")
 
-    for epoch in range(start_epoch, tc["epochs"] + 1):
+    for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
         tr = train_epoch(model, loaders, optimizer, scheduler,
-                         device, config, writer, epoch, gs)
-        vr = eval_epoch(model, loaders, "val", device, config, writer, epoch)
-        elapsed = time.time() - t0
-
+                         device, config, writer, epoch, gs,
+                         class_weights, phase2=args.phase2)
+        vr = eval_epoch(model, loaders, "val", device, config,
+                        writer, epoch, class_weights)
         print(
-            f"Ep {epoch:02d}/{tc['epochs']} | {elapsed:.0f}s | "
+            f"Ep {epoch:02d}/{epochs} | {time.time()-t0:.0f}s | "
             f"train loss {tr['loss']:.3f} f1 {tr['f1_macro']:.3f} | "
             f"val loss {vr['loss']:.3f} f1 {vr['f1_macro']:.3f} "
             f"acc {vr['accuracy']:.3f}"
         )
         save_ckpt(model, optimizer, scheduler, epoch, vr, ckpt_dir / "last.pt")
-
         if stopper.step(vr[primary]):
-            save_ckpt(model, optimizer, scheduler, epoch, vr, ckpt_dir / "best.pt")
+            save_ckpt(model, optimizer, scheduler, epoch, vr, ckpt_dir / best_name)
             print(f"  ✓ Best {primary}: {vr[primary]:.4f}")
-
         if stopper.triggered:
             print(f"Early stopping at epoch {epoch}"); break
 
     # ── Test eval ──────────────────────────────────────────────────────────────
-    print("\nTest evaluation...")
+    print(f"\nTest evaluation ({best_name})...")
     model.load_state_dict(
-        torch.load(ckpt_dir / "best.pt", map_location=device)["model"]
+        torch.load(ckpt_dir / best_name, map_location=device)["model"]
     )
-    tr_res = eval_epoch(model, loaders, "test", device, config, writer, epoch=0)
+    test_res = eval_epoch(model, loaders, "test", device, config,
+                          writer, 0, class_weights)
     print("\nTest results:")
-    for k, v in tr_res.items(): print(f"  {k:20s}: {v:.4f}")
+    for k, v in test_res.items(): print(f"  {k:20s}: {v:.4f}")
 
     model.eval()
     all_preds, all_labels = [], []
     with torch.no_grad():
         for mod in ("wrime", "ravdess"):
             for batch in loaders["test"][mod]:
-                kwargs = {}
+                def d(x): return x.to(device) if x is not None else None
                 if "text_features" in batch:
-                    kwargs["text_features"]  = batch["text_features"].to(device) if batch["text_features"] is not None else None
-                    kwargs["audio_features"] = batch["audio_features"].to(device) if batch["audio_features"] is not None else None
+                    kwargs = {"text_features":  d(batch["text_features"]),
+                              "audio_features": d(batch["audio_features"])}
                 else:
-                    kwargs = {k: v.to(device) if v is not None else None
-                              for k, v in batch_to_model_inputs(batch).items()}
+                    kwargs = {k: d(v) for k, v in batch_to_model_inputs(batch).items()}
                 out = model(**kwargs)
                 all_preds.extend(out["predicted_class"].cpu().tolist())
                 all_labels.extend(batch["label"].tolist())
@@ -364,8 +408,7 @@ def main():
     print(classification_report(all_labels, all_preds,
                                  target_names=EMOTION_CLASSES, digits=3))
     writer.close()
-    print(f"Checkpoints: {ckpt_dir} | TensorBoard: tensorboard --logdir {log_dir}")
-
+    print(f"Checkpoints: {ckpt_dir}")
 
 if __name__ == "__main__":
     main()

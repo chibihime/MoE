@@ -1,110 +1,119 @@
 # MoE Emotion Predictor
 
-Real-time Japanese emotion prediction from text and audio using a **Mixture of Experts (MoE)** architecture. Predicts both a discrete emotion label and continuous valence/arousal scores — live, from microphone input (streamed from the client) or uploaded audio files.
+Real-time Japanese emotion prediction from text and audio using a Mixture of Experts (MoE) architecture. Given Japanese speech or text (or both), the system predicts a discrete emotion label and continuous valence/arousal scores — live, from mic input streamed by the client, or from an uploaded audio file.
 
 ---
 
-## What This Does
+## Current model performance
 
-Given Japanese speech or text (or both), the system outputs:
+Best checkpoint: `outputs/checkpoints/best.pt` — macro F1 **0.303** on 7 classes (random baseline = 0.143).
+
+| Emotion | Precision | Recall | F1 | Support |
+|---------|-----------|--------|----|---------|
+| happy | 0.551 | 0.503 | 0.526 | 2,037 |
+| sad | 0.490 | 0.284 | 0.359 | 1,632 |
+| angry | 0.205 | 0.466 | 0.284 | 279 |
+| neutral | 0.418 | 0.294 | 0.345 | 1,406 |
+| anxious | 0.154 | 0.263 | 0.195 | 338 |
+| surprised | 0.219 | 0.347 | 0.269 | 680 |
+| disgusted | 0.106 | 0.212 | 0.141 | 288 |
+
+See `documentation/training_performance_log.md` for the full training history.
+
+---
+
+## What this does
+
+Given Japanese text, audio, or both, the system outputs:
 
 - **Discrete emotion** — one of: `happy`, `sad`, `angry`, `neutral`, `anxious`, `surprised`, `disgusted`
 - **Confidence scores** — softmax probability over all 7 classes
-- **Valence score** — how positive/negative the emotion is (1–9 scale)
-- **Arousal score** — how activated/calm the emotion is (1–9 scale)
+- **Valence** — how positive/negative the emotion is (1–9 scale)
+- **Arousal** — how activated/calm the emotion is (1–9 scale)
 
-It runs in two modes:
-- **File mode** — upload a `.wav`, `.mp3`, `.flac`, or `.m4a` audio clip (up to 30s) via HTTP
-- **Stream mode** — real-time mic capture in the browser/client, sent as PCM chunks over WebSocket
-
----
-
-## Deployment Architecture
-
-Audio capture **always happens on the client** (browser or mobile app). The server never touches a microphone directly. `pyaudio` and `webrtcvad` are not installed or required anywhere in this project.
-
-```
-┌─────────────────────────────────┐        ┌──────────────────────────────────┐
-│           CLIENT                │        │            SERVER                │
-│                                 │        │                                  │
-│  Browser / Mobile App           │        │  FastAPI                         │
-│                                 │        │                                  │
-│  File mode:                     │        │  POST /predict/file              │
-│    audio file ──────────────────┼──HTTP──►  soundfile / torchaudio decode   │
-│                                 │        │  → AudioEncoder → MoEModel       │
-│  Stream mode:                   │        │                                  │
-│    Web Audio API (mic)          │        │  WS  /predict/stream             │
-│    → PCM Float32 chunks ────────┼──WS────►  np.frombuffer(bytes, float32)   │
-│      (500ms @ 16kHz)            │        │  → AudioEncoder → MoEModel       │
-│                                 │        │                                  │
-│  Text mode (optional):          │        │  POST /predict/text              │
-│    Japanese text string ────────┼──HTTP──►  BERT tokenizer → MoEModel       │
-└─────────────────────────────────┘        └──────────────────────────────────┘
-```
+Two inference modes:
+- **File mode** — upload a `.wav`, `.mp3`, `.flac`, or `.m4a` clip (up to 30s) via HTTP
+- **Stream mode** — browser mic captured via Web Audio API, sent as PCM chunks over WebSocket
 
 ---
 
-## Model Architecture
+## Architecture
 
 ```
-Japanese Text ──► JapaneseTextEncoder          Audio (file / stream bytes)
-(string)          [cl-tohoku/bert-base-ja-v3]  ──► AudioEncoder
-                  hidden: 768                       [facebook/wav2vec2-base]
-                       │                            hidden: 768
-                       │                                │
+Japanese text  →  JapaneseTextEncoder           Audio (file / stream bytes)
+                  bert-base-japanese-v3     →   AudioEncoder
+                  768-dim output                wav2vec2-base
+                       │                        768-dim output
                        └──────────┬─────────────────────┘
                                   │
-                             MoERouter
+                             MoE Router
                         (learned soft gating)
                          text_weight │ audio_weight
                                   │
-                           WeightedFusion
-                           (gate × text_proj
-                            + gate × audio_proj)
-                           hidden: 512
+                           Weighted Fusion
+                        (gate × text + gate × audio)
                                   │
-                    ┌─────────────┴──────────────┐
-                    │                            │
-             ClassificationHead          RegressionHead
-             Linear → 7 classes          Linear → 2 outputs
-             softmax probabilities        sigmoid → [1, 9]
-                    │                            │
-             predicted_label              valence, arousal
-             + confidence scores
+                  ┌───────────────┴──────────────┐
+                  │                              │
+        Classification head             Regression head
+         Linear → 7 classes              Linear → 2 outputs
+         softmax probabilities           sigmoid → valence, arousal [1–9]
 ```
 
-### Key design choices
+### Why these models
 
 | Component | Choice | Reason |
 |---|---|---|
-| Text encoder | `cl-tohoku/bert-base-japanese-v3` | Best general Japanese BERT; native MeCab tokenization |
-| Audio encoder | `facebook/wav2vec2-base` | Acoustic features (not transcription); captures pitch, energy, rhythm |
-| Routing | Learned soft gate | Adapts during training; not a hardcoded if/else switch |
-| Fusion | Weighted sum with learned gate | Gracefully degrades when one modality is absent |
-| Output | Dual head (clf + regression) | Discrete label for UX; continuous scores for interpretability |
-| Loss | 0.6 × CE + 0.4 × MSE | Prioritises correct class; continuous scores as auxiliary signal |
-| Audio capture | Client-side only | Server never touches mic; no pyaudio/webrtcvad on server |
+| Text encoder | `cl-tohoku/bert-base-japanese-v3` | Best general Japanese BERT; native MeCab tokenisation |
+| Audio encoder | `facebook/wav2vec2-base` | Encodes acoustic features (pitch, rhythm, energy) — not transcription |
+| Router | Learned soft gate | Adapts during training; not a hardcoded if/else |
+| Fusion | Weighted sum | Degrades cleanly when one modality is absent |
+| Loss | CrossEntropy + inverse-frequency class weights + label smoothing 0.1 | Corrects for heavy class imbalance in training data |
 
 ---
 
-## Training Datasets
+## Deployment architecture
 
-### WRIME — Japanese Text (Text Expert)
-- ~17,000 Japanese social media posts annotated with Plutchik emotion intensities
-- No manual download required — loads via HuggingFace `datasets`
-- Covers text modality training end-to-end
+Audio capture happens on the client. The server receives bytes — no mic library needed server-side.
 
-### RAVDESS — English Emotional Speech (Audio Expert)
-- 1,440 clips from 24 professional actors (12F / 12M)
-- 8 emotions, 2 intensity levels, 16-bit WAV
-- English speech is used to bootstrap the audio expert — acoustic emotion patterns (pitch, rhythm, energy) transfer across languages
-- Download once: `python data/download_ravdess.py` (~1.6 GB from Zenodo)
+```
+CLIENT                                    SERVER
+──────────────────────────────────────    ──────────────────────────────────────
+File upload: audio file ────────────────► POST /predict/file
+                                          soundfile decode → AudioEncoder → model
 
-### Emotion Label Mapping
+Stream: Web Audio API (mic)
+        PCM Float32 chunks ─────────────► WS /predict/stream
+        500ms @ 16kHz                     np.frombuffer → AudioEncoder → model
 
-Both datasets map to our 7-class emotion space:
+Japanese text string ───────────────────► POST /predict/text
+                                          BERT tokenise → model
+```
 
-| Our Label | From WRIME | From RAVDESS |
+`pyaudio` and `webrtcvad` are not installed anywhere in this project.
+
+---
+
+## Training datasets
+
+### WRIME — Japanese text (text expert)
+~43,000 Japanese social media posts annotated with Plutchik emotion intensities (0–3). Downloaded automatically from GitHub on first run. Covers the text modality end-to-end.
+
+### RAVDESS — English emotional speech (audio expert)
+1,440 clips from 24 professional actors. English speech bootstraps the audio encoder — acoustic emotion patterns (pitch, energy, rhythm) transfer across languages. Download once:
+
+```bash
+python data/download_ravdess.py   # ~1.6 GB from Zenodo
+```
+
+### Why not DEAP?
+DEAP was the original plan. It was removed entirely because DEAP contains EEG and physiological signals from people watching music videos — no speech, no text, no Japanese. It cannot be used as training input for this system. Its valence/arousal scale (1–9) is kept as a labelling convention only.
+
+### Emotion label derivation
+
+Both datasets map to our 7 classes via `data/emotion_mappings.py`:
+
+| Our label | From WRIME | From RAVDESS |
 |---|---|---|
 | happy | joy | happy (03) |
 | sad | sadness | sad (04) |
@@ -114,54 +123,56 @@ Both datasets map to our 7-class emotion space:
 | surprised | surprise | surprised (08) |
 | disgusted | disgust | disgust (07) |
 
-### Valence / Arousal Labels
-
-Neither WRIME nor RAVDESS provides continuous V/A scores directly. They are approximated using Russell's circumplex model — each emotion class is assigned a base (valence, arousal) pair on the 1–9 scale, scaled by the sample's intensity. See `data/emotion_mappings.py`.
+Valence/arousal targets are approximated using Russell's circumplex model and scaled by per-sample intensity. Neither dataset provides continuous V/A labels directly.
 
 ---
 
-## Repository Structure
+## Repository structure
 
 ```
 MoE/
 ├── configs/
-│   ├── base.yaml              # Project-wide settings (paths, emotion classes, inference)
-│   ├── model.yaml             # Architecture (encoders, router, fusion, heads)
-│   └── train.yaml             # Training (epochs, LR, loss weights, datasets, augmentation)
+│   ├── base.yaml              # paths, emotion classes, inference settings
+│   ├── model.yaml             # encoder names, hidden sizes, freeze layers
+│   └── train.yaml             # epochs, LR, loss weights, dataset paths
 │
 ├── models/
-│   ├── text/
-│   │   └── encoder.py         # JapaneseTextEncoder (BERT-based)
-│   ├── audio/
-│   │   └── encoder.py         # AudioEncoder (Wav2Vec2; accepts np.ndarray, no mic dependency)
-│   ├── heads/
-│   │   └── emotion_head.py    # Dual head: 7-class clf + valence/arousal regression
-│   ├── fusion/
-│   │   └── fusion.py          # WeightedFusion with learned gate
+│   ├── text/encoder.py        # JapaneseTextEncoder (BERT)
+│   ├── audio/encoder.py       # AudioEncoder (Wav2Vec2, soundfile-based)
+│   ├── heads/emotion_head.py  # dual head: 7-class clf + V/A regression
+│   ├── fusion/fusion.py       # WeightedFusion with learned gate
 │   └── multimodal/
-│       ├── router.py          # MoERouter — learned soft gating over experts
-│       └── moe.py             # MoEEmotionModel — top-level model + predict() API
+│       ├── router.py          # MoERouter — learned soft gating
+│       └── moe.py             # MoEEmotionModel — top-level model
 │
 ├── data/
-│   ├── emotion_mappings.py    # Shared label maps + V/A approximations (single source of truth)
-│   ├── wrime_dataset.py       # WRIME PyTorch Dataset (Japanese text)
-│   ├── ravdess_dataset.py     # RAVDESS PyTorch Dataset (English audio)
-│   ├── combined_dataset.py    # Unified DataLoader factory for both datasets
-│   ├── download_ravdess.py    # One-time RAVDESS download script
+│   ├── emotion_mappings.py    # label maps, V/A approximations (single source of truth)
+│   ├── wrime_dataset.py       # WRIME PyTorch Dataset (auto-downloads from GitHub)
+│   ├── ravdess_dataset.py     # RAVDESS PyTorch Dataset (soundfile-based loading)
+│   ├── combined_dataset.py    # raw DataLoader factory (used for phase 2 / inference)
+│   ├── cached_dataset.py      # fast DataLoader from pre-computed features
+│   ├── download_ravdess.py    # one-time RAVDESS download script
 │   └── raw/
-│       └── ravdess/           # Extracted RAVDESS (Actor_01/ … Actor_24/) — not committed
+│       ├── ravdess/           # Actor_01/ … Actor_24/ (not committed)
+│       ├── wrime/             # wrime-ver1.tsv (not committed)
+│       └── features/          # cached encoder outputs (not committed)
+│
+├── training/
+│   ├── cache_features.py      # run once: encodes all data, saves 768-dim vectors
+│   └── train.py               # training loop (phase 1 cached, phase 2 raw)
 │
 ├── utils/
-│   └── deap_label_mapper.py   # V/A → discrete mapping utility (scale reference only)
+│   └── deap_label_mapper.py   # V/A → discrete (scale reference, not used in training)
 │
-├── training/                  # Training loop — next step
-├── inference/                 # Inference pipeline — next step
-├── api/                       # FastAPI endpoints (HTTP + WebSocket) — next step
-├── frontend/                  # Web Audio API mic capture + WebSocket client — next step
-├── notebooks/                 # EDA, label distribution checks, ablations
-├── reporting/                 # Metrics, confusion matrices
-├── personalization/           # Per-user calibration (future)
+├── documentation/
+│   └── training_performance_log.md
 │
+├── inference/                 # next: pipeline.py
+├── api/                       # next: FastAPI HTTP + WebSocket
+├── frontend/                  # next: Web Audio API client
+├── notebooks/
+├── reporting/
+├── personalization/
 ├── requirements.txt
 └── README.md
 ```
@@ -170,46 +181,41 @@ MoE/
 
 ## Setup
 
-### 1. Clone and create environment
-
 ```bash
 git clone <your-repo-url>
 cd MoE
 python -m venv .venv
 source .venv/bin/activate
-```
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
-```
 
-### 3. Verify Japanese tokenizer
-
-```bash
+# Verify Japanese tokeniser
 python -c "import fugashi; print('MeCab OK')"
-```
 
-### 4. Download RAVDESS audio data
-
-```bash
+# Download RAVDESS (one-time, ~1.6 GB)
 python data/download_ravdess.py
-# Downloads ~1.6 GB to data/raw/ravdess/
-# WRIME loads automatically from HuggingFace — no download needed
-```
-
-### 5. Train
-
-```bash
-python training/train.py --config configs/
 ```
 
 ---
 
-## Usage
+## Training
 
-### File upload inference
+```bash
+# Step 1 — cache encoder features (run once, ~10 min)
+python training/cache_features.py
+
+# Step 2 — train phase 1 (frozen encoders, ~1–2 min/epoch)
+python training/train.py
+
+# Resume from checkpoint
+python training/train.py --resume outputs/checkpoints/best.pt
+
+# Monitor
+tensorboard --logdir logs/
+```
+
+---
+
+## Inference (quick usage)
 
 ```python
 import yaml, torch, soundfile as sf
@@ -219,105 +225,58 @@ with open("configs/model.yaml") as f:
     config = yaml.safe_load(f)
 
 model = MoEEmotionModel(config)
-model.load_state_dict(torch.load("outputs/checkpoints/best.pt"))
+model.load_state_dict(torch.load("outputs/checkpoints/best.pt")["model"])
 
 # Text only
 result = model.predict(text="今日はとても嬉しい！")
 print(result["predicted_label"])   # ["happy"]
 
-# Audio file (decoded server-side from uploaded bytes)
-waveform, sr = sf.read("audio.wav", dtype="float32")
+# Audio file
+waveform, sr = sf.read("clip.wav", dtype="float32")
 result = model.predict(audio=waveform)
 
-# Both modalities
+# Both
 result = model.predict(text="悲しいね", audio=waveform)
 print(result["valence"].item())    # e.g. 2.4
 print(result["arousal"].item())    # e.g. 3.1
 ```
 
-### WebSocket stream inference
-
-```python
-# api/ws_stream.py (preview — full implementation in api/ step)
-from fastapi import WebSocket
-import numpy as np
-from models.multimodal.moe import MoEEmotionModel
-
-CHUNK_SAMPLES = 8000  # 500ms at 16kHz
-
-async def stream_endpoint(websocket: WebSocket, model: MoEEmotionModel):
-    await websocket.accept()
-    while True:
-        raw   = await websocket.receive_bytes()
-        chunk = np.frombuffer(raw, dtype=np.float32)
-        out   = model.predict_stream_chunk(chunk)
-        await websocket.send_json({
-            "emotion": out["predicted_label"][0],
-            "valence": round(out["valence"].item(), 2),
-            "arousal": round(out["arousal"].item(), 2),
-            "probs":   out["probs"].tolist(),
-        })
-```
-
----
-
-## Configuration
-
-| Config | Key params |
-|---|---|
-| `base.yaml` | emotion classes, audio stream settings, paths |
-| `model.yaml` | encoder model names, hidden sizes, freeze layers, fusion type |
-| `train.yaml` | epochs, LR, loss weights, dataset paths, augmentation |
-
----
-
-## Emotion Classes & V/A Approximations (Russell Circumplex)
-
-| Emotion | Valence | Arousal | Notes |
-|---|---|---|---|
-| happy | 7.5 | 6.5 | High V, High A |
-| sad | 2.5 | 3.0 | Low V, Low A |
-| angry | 2.0 | 7.5 | Low V, Very High A |
-| neutral | 5.0 | 4.0 | Mid V, Mid A |
-| anxious | 3.0 | 7.0 | Low V, High A |
-| surprised | 6.5 | 7.5 | High V, High A |
-| disgusted | 2.0 | 5.0 | Low V, Mid A |
-
 ---
 
 ## Roadmap
 
-- [x] Configs — `base.yaml`, `model.yaml`, `train.yaml`
-- [x] Text encoder — Japanese BERT (`cl-tohoku/bert-base-japanese-v3`)
-- [x] Audio encoder — Wav2Vec2, stream + file (deployment-ready, no mic dependency)
-- [x] MoE Router — learned soft gating
-- [x] Fusion layer — weighted gate
-- [x] Dual emotion head — classification + regression
-- [x] Emotion mappings — label maps + Russell circumplex V/A approximations
-- [x] WRIME dataset — Japanese text emotion (HuggingFace)
-- [x] RAVDESS dataset — English emotional speech audio (Zenodo)
-- [x] Combined DataLoader — unified train/val/test with weighted sampling
-- [x] RAVDESS download script
-- [ ] Training loop — `training/train.py`
-- [ ] Inference pipeline — `inference/pipeline.py`
-- [ ] FastAPI endpoints — `api/` (HTTP file upload + WebSocket stream)
-- [ ] Frontend — `frontend/` (Web Audio API + WebSocket client)
-- [ ] Per-user calibration — `personalization/`
+- [x] Configs
+- [x] Text encoder (Japanese BERT)
+- [x] Audio encoder (Wav2Vec2, soundfile-based, deployment-ready)
+- [x] MoE Router
+- [x] Weighted Fusion
+- [x] Dual emotion head (classification + regression)
+- [x] Emotion label mappings
+- [x] WRIME dataset (Japanese text)
+- [x] RAVDESS dataset (English audio)
+- [x] Combined DataLoaders + WeightedRandomSampler
+- [x] Feature caching pipeline
+- [x] Training loop with class weights + label smoothing
+- [x] Training performance log
+- [ ] `inference/pipeline.py`
+- [ ] `api/` — FastAPI HTTP + WebSocket endpoints
+- [ ] `frontend/` — Web Audio API mic capture + WebSocket client
+- [ ] Per-user calibration (`personalization/`)
 
 ---
 
-## Dependencies Summary
+## Dependencies
 
 | Category | Key packages |
 |---|---|
 | Deep learning | `torch`, `torchaudio`, `transformers`, `accelerate` |
 | Japanese NLP | `fugashi`, `ipadic`, `sentencepiece` |
-| Audio (server) | `librosa`, `soundfile` — decode + resample only, no mic capture |
+| Audio (server-side) | `librosa`, `soundfile` — no mic capture |
 | API | `fastapi`, `uvicorn`, `websockets`, `pydantic` |
-| Training | `datasets`, `torchmetrics`, `tensorboard`, `wandb` |
+| Training | `torchmetrics`, `tensorboard`, `wandb` |
 | Utilities | `pyyaml`, `omegaconf`, `tqdm`, `rich` |
 
-> **Not included:** `pyaudio`, `webrtcvad` — mic capture is handled client-side.
+Not included: `pyaudio`, `webrtcvad` — mic capture is client-side.
 
 ---
 

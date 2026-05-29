@@ -1,13 +1,13 @@
 training:
-  epochs: 20                         # was 50; plenty for fine-tuning
+  epochs: 40
   batch_size: 64
-  cached_batch_size: 512        # large batch safe when no encoder forward pass                     # was 32; larger batch = fewer steps
+  cached_batch_size: 512
   learning_rate: 2.0e-5
   weight_decay: 0.01
   warmup_steps: 200
   gradient_clip: 1.0
-  grad_accumulation_steps: 2        # effective batch = 64 × 2 = 128
-  max_steps_per_epoch: 150          # cap WRIME steps; was 944 → now 150
+  grad_accumulation_steps: 2
+  max_steps_per_epoch: 60
 
   loss:
     classification_weight: 0.6
@@ -24,12 +24,20 @@ training:
     mode: "max"
 
   save_best_only: true
+  ravdess_ratio: 2
   log_every_n_steps: 25
 
+  # Phase 2 settings (fixed)
+  phase2_epochs: 15
+  phase2_max_steps: 75          # was 25 — enough steps to stabilise
+  phase2_ravdess_ratio: 0       # text-only; audio too slow on MPS
+  phase2_unfreeze_layers: 1     # was 2 — unfreeze only final layer (~7M params)
+  phase2_lr_divisor: 40         # LR = base_lr / 40 = 5e-7  (was / 5 = 4e-6, too high)
+
 data:
-  wrime_min_intensity: 0.0
+  wrime_min_intensity: 0.34
   ravdess_path: "data/raw/ravdess"
-  max_audio_duration_s: 3.0         # was 5.0; 3s = 48k samples vs 80k
+  max_audio_duration_s: 3.0
 
   ravdess_splits:
     train: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]
@@ -38,7 +46,7 @@ data:
 
   augmentation:
     text:
-      enabled: false                 # disable during initial training runs
+      enabled: false
     audio:
       enabled: false
 
