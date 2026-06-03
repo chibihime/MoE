@@ -6,7 +6,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 training/train.py
 
 Phase 1: python training/train.py            (frozen encoders, uses cache)
-Phase 2: python training/train.py --phase2   (unfrozen top layers, raw data, 25 steps/epoch)
+Phase 2: python training/train.py --phase2   (unfrozen top layers, raw data)
+
+Changes vs previous version:
+  - Phase 2 optimiser uses differential LR: encoder layers get lr * 0.1,
+    head/fusion/router layers keep the full phase2 LR. Prevents catastrophic
+    forgetting while still allowing encoder adaptation.
+  - Removed hardcoded phase2_max_steps=100 and phase2_lr_divisor=20 defaults
+    that were silently overriding train.yaml values (yaml now always wins).
+  - unfreeze_top_layers handles n_layers=0 (projection-only unfreeze).
+  - compute_class_weights smooth=True uses sqrt for Phase 1 cached path.
 """
 
 import argparse, random, time
@@ -52,7 +61,14 @@ def cache_exists():
 
 # ── Class weights ──────────────────────────────────────────────────────────────
 
-def compute_class_weights(loaders, device):
+def compute_class_weights(loaders, device, smooth: bool = False):
+    """
+    smooth=True (Phase 1): sqrt-smooth weights because WeightedRandomSampler
+    already balances class exposure — full inverse-freq on top would
+    double-correct and inflate minority-class recall at the cost of precision.
+
+    smooth=False (Phase 2): full inverse-frequency, no sampler active.
+    """
     counts = Counter()
     for mod in ("wrime", "ravdess"):
         for batch in loaders["train"][mod]:
@@ -62,7 +78,12 @@ def compute_class_weights(loaders, device):
     for i in range(NUM_CLASSES):
         weights[i] = total / (NUM_CLASSES * max(counts.get(i, 1), 1))
     weights = weights / weights.mean()
-    print("Class weights:")
+
+    if smooth:
+        weights = torch.sqrt(weights)
+        weights = weights / weights.mean()
+
+    print(f"Class weights {'(sqrt-smoothed)' if smooth else '(full inverse-freq)'}:")
     for i, (cls, w) in enumerate(zip(EMOTION_CLASSES, weights)):
         print(f"  {cls:12s} {w:.3f}  (n={counts.get(i,0):,})")
     return weights.to(device)
@@ -134,13 +155,14 @@ def train_epoch(model, loaders, optimizer, scheduler,
     clip    = config["training"]["gradient_clip"]
     log_n   = config["training"]["log_every_n_steps"]
     accum   = config["training"].get("grad_accumulation_steps", 1)
+    tc      = config["training"]
 
     if phase2:
-        max_steps = config["training"].get("phase2_max_steps", 25)
-        rav_ratio = config["training"].get("phase2_ravdess_ratio", 0)
+        max_steps = tc.get("phase2_max_steps", 75)
+        rav_ratio = tc.get("phase2_ravdess_ratio", 0)
     else:
-        max_steps = config["training"].get("max_steps_per_epoch", None)
-        rav_ratio = config["training"].get("ravdess_ratio", 1)
+        max_steps = tc.get("max_steps_per_epoch", None)
+        rav_ratio = tc.get("ravdess_ratio", 1)
 
     wrime_it   = cycle(loaders["train"]["wrime"])
     ravdess_it = cycle(loaders["train"]["ravdess"])
@@ -229,20 +251,53 @@ class EarlyStopping:
 
 # ── Unfreeze top encoder layers (phase 2) ─────────────────────────────────────
 
-def unfreeze_top_layers(model, n_layers=2):
+def unfreeze_top_layers(model, n_layers=1):
     for encoder, name in [(model.text_encoder, "BERT"),
                           (model.audio_encoder, "Wav2Vec2")]:
-        try:
-            layers = encoder.encoder.encoder.layer
-        except AttributeError:
-            layers = encoder.encoder.encoder.layers
-        for layer in layers[-n_layers:]:
-            for p in layer.parameters():
-                p.requires_grad = True
+        if n_layers > 0:
+            try:
+                layers = encoder.encoder.encoder.layer
+            except AttributeError:
+                layers = encoder.encoder.encoder.layers
+            for layer in layers[-n_layers:]:
+                for p in layer.parameters():
+                    p.requires_grad = True
+        # Always unfreeze the projection regardless of n_layers
         for p in encoder.projection.parameters():
             p.requires_grad = True
         n = sum(p.numel() for p in encoder.parameters() if p.requires_grad)
-        print(f"  {name}: top {n_layers} layers unfrozen ({n:,} params)")
+        print(f"  {name}: {n_layers} transformer layer(s) + projection unfrozen ({n:,} params)")
+
+
+# ── Build phase 2 optimiser with differential LR ──────────────────────────────
+
+def build_phase2_optimizer(model, lr, weight_decay):
+    """
+    Encoder layers (just unfrozen) get lr * 0.1 — small enough to adapt
+    without overwriting Phase 1 representations (catastrophic forgetting).
+    All other trainable params (head, fusion, router) keep the full lr.
+    """
+    encoder_params, other_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if "text_encoder" in name or "audio_encoder" in name:
+            encoder_params.append(p)
+        else:
+            other_params.append(p)
+
+    n_enc   = sum(p.numel() for p in encoder_params)
+    n_other = sum(p.numel() for p in other_params)
+    print(f"  Encoder params: {n_enc:,} @ lr={lr*0.1:.1e}")
+    print(f"  Other params:   {n_other:,} @ lr={lr:.1e}")
+
+    return AdamW(
+        [
+            {"params": encoder_params, "lr": lr * 0.1},
+            {"params": other_params,   "lr": lr},
+        ],
+        weight_decay=weight_decay,
+    )
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -311,29 +366,31 @@ def main():
     print(f"Trainable: {n_train:,} / {n_total:,} ({100*n_train/n_total:.1f}%)")
 
     # ── Class weights ──────────────────────────────────────────────────────────
-    class_weights = compute_class_weights(loaders, device)
+    class_weights = compute_class_weights(loaders, device, smooth=use_cache)
 
     # ── Optimiser ──────────────────────────────────────────────────────────────
     tc     = config["training"]
     accum  = tc.get("grad_accumulation_steps", 1)
-    epochs = tc.get("phase2_epochs", 10) if args.phase2 else tc["epochs"]
+    epochs = tc.get("phase2_epochs", 15) if args.phase2 else tc["epochs"]
+
+    # LR: always read divisor from yaml — no hardcoded override
     lr_div = tc.get("phase2_lr_divisor", 40)
     lr     = tc["learning_rate"] / lr_div if args.phase2 else tc["learning_rate"]
 
-    if args.phase2:
-        max_s = tc.get("phase2_max_steps", 25)
-    else:
-        max_s = tc.get("max_steps_per_epoch", None)
-
-    n_base   = max(len(loaders["train"]["wrime"]),
-                   len(loaders["train"]["ravdess"]))
+    max_s    = tc.get("phase2_max_steps", 75) if args.phase2 else tc.get("max_steps_per_epoch", None)
+    n_base   = max(len(loaders["train"]["wrime"]), len(loaders["train"]["ravdess"]))
     steps_ep = min(n_base, max_s) if max_s else n_base
     total_s  = (steps_ep // accum) * epochs
 
-    optimizer = AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=lr, weight_decay=tc["weight_decay"],
-    )
+    if args.phase2:
+        print("Building phase 2 optimiser (differential LR)...")
+        optimizer = build_phase2_optimizer(model, lr, tc["weight_decay"])
+    else:
+        optimizer = AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=lr, weight_decay=tc["weight_decay"],
+        )
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=min(tc["warmup_steps"], total_s // 10),
@@ -356,7 +413,9 @@ def main():
     print(f"\n{'='*50}")
     print(f"Phase        : {'2 (fine-tune)' if args.phase2 else '1 (frozen)'}")
     print(f"Epochs       : {epochs}  |  Steps/epoch: {steps_ep}")
-    print(f"LR           : {lr:.1e}  |  Batch: {tc.get('cached_batch_size',512) if use_cache else tc['batch_size']}")
+    print(f"LR           : {lr:.1e} (divisor {lr_div if args.phase2 else 1})")
+    print(f"Batch        : {tc.get('cached_batch_size', 512) if use_cache else tc['batch_size']}")
+    print(f"Weights      : {'sqrt-smoothed (sampler active)' if use_cache else 'full inverse-freq'}")
     print(f"{'='*50}\n")
 
     for epoch in range(start_epoch, epochs + 1):

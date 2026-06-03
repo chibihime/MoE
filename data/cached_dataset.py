@@ -7,11 +7,19 @@ data/cached_dataset.py
 
 Lightweight Dataset loading pre-computed encoder features from disk.
 Used by train.py after cache_features.py has been run.
+
+Changes vs original:
+  - WeightedRandomSampler on WRIME train loader so every emotion class
+    is seen equally often regardless of raw frequency.
+  - RAVDESS train loader also sampled by class weight (small dataset,
+    class imbalance still present even after RAVDESS-internal split).
 """
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from typing import Dict
+
+from data.emotion_mappings import NUM_CLASSES
 
 FEATURE_DIR = Path("data/raw/features")
 
@@ -43,6 +51,22 @@ class CachedDataset(Dataset):
         }
 
 
+def _make_weighted_sampler(labels: torch.Tensor) -> WeightedRandomSampler:
+    """
+    Returns a sampler that draws each class with equal probability.
+    Minority classes (angry, anxious, surprised, disgusted) get upsampled;
+    majority classes (happy, sad, neutral) get downsampled accordingly.
+    """
+    counts = torch.bincount(labels, minlength=NUM_CLASSES).float()
+    weight_per_class = 1.0 / counts.clamp(min=1)           # inverse frequency
+    sample_weights   = weight_per_class[labels]             # one weight per sample
+    return WeightedRandomSampler(
+        weights     = sample_weights,
+        num_samples = len(labels),   # same epoch length as before
+        replacement = True,
+    )
+
+
 def _collate_text(batch):
     return {
         "text_features":  torch.stack([b["features"] for b in batch]),
@@ -70,6 +94,9 @@ def build_cached_dataloaders(batch_size: int = 256) -> Dict:
     Build DataLoaders from cached feature files.
     batch_size can be large (no encoder forward pass per step).
     Returns: {"train": {"wrime": DL, "ravdess": DL}, "val": {...}, "test": {...}}
+
+    Training loaders use WeightedRandomSampler for balanced class exposure.
+    Val/test loaders are unshuffled and unweighted (true distribution).
     """
     loaders = {}
     splits = {
@@ -77,20 +104,37 @@ def build_cached_dataloaders(batch_size: int = 256) -> Dict:
         "val":   ("validation", False),
         "test":  ("test",       False),
     }
-    for split, (file_split, shuffle) in splits.items():
+    for split, (file_split, is_train) in splits.items():
         wrime_ds   = CachedDataset(FEATURE_DIR / f"wrime_{file_split}.pt",   "text")
         ravdess_ds = CachedDataset(FEATURE_DIR / f"ravdess_{file_split}.pt", "audio")
 
-        loaders[split] = {
-            "wrime": DataLoader(
-                wrime_ds, batch_size=batch_size, shuffle=shuffle,
+        if is_train:
+            wrime_sampler   = _make_weighted_sampler(wrime_ds.labels)
+            ravdess_sampler = _make_weighted_sampler(ravdess_ds.labels)
+            wrime_loader = DataLoader(
+                wrime_ds, batch_size=batch_size,
+                sampler=wrime_sampler,          # replaces shuffle=True
                 num_workers=0, pin_memory=False,
                 collate_fn=_collate_text,
-            ),
-            "ravdess": DataLoader(
-                ravdess_ds, batch_size=batch_size, shuffle=shuffle,
+            )
+            ravdess_loader = DataLoader(
+                ravdess_ds, batch_size=batch_size,
+                sampler=ravdess_sampler,
                 num_workers=0, pin_memory=False,
                 collate_fn=_collate_audio,
-            ),
-        }
+            )
+        else:
+            wrime_loader = DataLoader(
+                wrime_ds, batch_size=batch_size, shuffle=False,
+                num_workers=0, pin_memory=False,
+                collate_fn=_collate_text,
+            )
+            ravdess_loader = DataLoader(
+                ravdess_ds, batch_size=batch_size, shuffle=False,
+                num_workers=0, pin_memory=False,
+                collate_fn=_collate_audio,
+            )
+
+        loaders[split] = {"wrime": wrime_loader, "ravdess": ravdess_loader}
+
     return loaders

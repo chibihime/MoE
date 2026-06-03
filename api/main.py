@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import text, audio_file, stream, health
+from api.routes import text, audio_file, stream, health, sample
 from api.dependencies import init_pipeline
 
 logging.basicConfig(
@@ -67,3 +67,4 @@ app.include_router(health.router)
 app.include_router(text.router,       prefix="/predict")
 app.include_router(audio_file.router, prefix="/predict")
 app.include_router(stream.router,     prefix="/predict")
+app.include_router(sample.router,     prefix="/predict")

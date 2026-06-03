@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Emotion Predictor — 感情予測</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Space+Grotesk:wght@300;400;500;600&family=DM+Mono:wght@300;400&family=Noto+Sans+JP:wght@300;400&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --cream:    #f4efe6;
+  --cream2:   #ede8dd;
+  --cream3:   #e4ddd0;
+  --ink:      #1c1814;
+  --ink2:     rgba(28,24,20,0.50);
+  --ink3:     rgba(28,24,20,0.42);
+  --border:   rgba(28,24,20,0.09);
+  --border2:  rgba(28,24,20,0.16);
+  --accent:   #7a5c14;
+  --accent-l: rgba(122,92,20,0.10);
+  --red:      #7a2215;
+  --green:    #2a5e40;
+}
+
+html, body {
+  min-height: 100%;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: 'Space Grotesk', 'Noto Sans JP', sans-serif;
+  font-weight: 300;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 28px 48px;
+}
+
+/* ── Header ─────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0 18px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+}
+
+.wordmark {
+  font-family: 'Playfair Display', serif;
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+.wordmark-sub {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 300;
+  font-size: 11px;
+  color: var(--ink2);
+  margin-left: 10px;
+  letter-spacing: 0.04em;
+}
+
+.header-right { display: flex; align-items: center; gap: 14px; }
+
+.lang-toggle {
+  display: flex;
+  background: var(--cream2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 1px;
+}
+.lang-btn {
+  padding: 4px 11px;
+  border: none;
+  background: transparent;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink2);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.lang-btn.active { background: var(--cream); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,0.07); }
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+  text-transform: uppercase;
+}
+.status-dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--ink3);
+  transition: all 0.3s;
+  flex-shrink: 0;
+}
+.status-dot.live  { background: var(--green); box-shadow: 0 0 5px var(--green); }
+.status-dot.error { background: var(--red); }
+
+/* ── Hero result — full width top ───────────────────── */
+.result-hero {
+  padding: 48px 0 36px;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0 40px;
+  align-items: start;
+}
+
+.result-left { display: flex; flex-direction: column; gap: 0; }
+
+.result-eyebrow {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-bottom: 10px;
+}
+
+.emotion-display {
+  font-family: 'Playfair Display', serif;
+  font-weight: 700;
+  font-size: 72px;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  color: var(--ink3);
+  transition: color 0.4s ease;
+  margin-bottom: 20px;
+}
+.emotion-display.has-result { color: var(--ink); }
+
+.result-stats {
+  display: flex;
+  gap: 28px;
+  align-items: baseline;
+}
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat-val {
+  font-family: 'DM Mono', monospace;
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--ink);
+  line-height: 1;
+}
+.stat-val.conf { color: var(--accent); }
+.stat-key {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+
+/* Routing weights */
+.routing {
+  margin-top: 16px;
+  display: none;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.routing.show { display: flex; }
+.route-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink2);
+}
+.route-track {
+  width: 52px; height: 2px;
+  background: var(--cream3);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.route-fill {
+  height: 100%;
+  background: var(--ink2);
+  border-radius: 1px;
+  width: 0%;
+  transition: width 0.5s ease;
+}
+
+/* Prob bars — right side of hero */
+.result-right {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 200px;
+  padding-top: 4px;
+}
+
+.prob-row {
+  display: grid;
+  grid-template-columns: 68px 1fr 32px;
+  align-items: center;
+  gap: 10px;
+}
+.prob-name {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink3);
+  transition: color 0.2s;
+}
+.prob-row.top .prob-name { color: var(--ink); }
+.prob-track {
+  height: 1.5px;
+  background: var(--cream3);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.prob-bar {
+  height: 100%;
+  background: var(--cream3);
+  border-radius: 1px;
+  width: 0%;
+  transition: width 0.5s cubic-bezier(0.4,0,0.2,1), background 0.3s;
+}
+.prob-row.top .prob-bar { background: var(--ink); }
+.prob-pct {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--ink3);
+  text-align: right;
+  transition: color 0.2s;
+}
+.prob-row.top .prob-pct { color: var(--ink); }
+
+/* Empty state text */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 12px;
+}
+.empty-line { font-size: 13px; color: var(--ink3); line-height: 1.7; }
+
+/* ── Input section ──────────────────────────────────── */
+.input-section { padding-top: 36px; }
+
+.input-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.input-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+.mode-tabs {
+  display: flex;
+  background: var(--cream2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 1px;
+}
+.tab {
+  padding: 6px 16px;
+  border: none;
+  background: transparent;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--ink2);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { background: var(--cream); color: var(--ink); font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.07); }
+
+/* Input areas */
+.input-area { display: none; flex-direction: column; gap: 16px; }
+.input-area.visible { display: flex; }
+
+/* Text mode */
+.text-row { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
+
+textarea {
+  background: var(--cream2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: 'Space Grotesk', 'Noto Sans JP', sans-serif;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink);
+  padding: 16px;
+  resize: none;
+  outline: none;
+  height: 110px;
+  transition: border-color 0.2s, background 0.2s;
+  line-height: 1.7;
+  width: 100%;
+}
+textarea::placeholder { color: var(--ink3); }
+textarea:focus { border-color: var(--border2); background: var(--cream); }
+
+/* Example chips */
+.chips-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--ink3);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  padding: 5px 13px;
+  background: var(--cream2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-family: 'Space Grotesk', 'Noto Sans JP', sans-serif;
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chip:hover { background: var(--accent-l); border-color: var(--accent); color: var(--accent); }
+
+/* Submit button */
+.submit-btn {
+  padding: 12px 20px;
+  background: var(--ink);
+  border: none;
+  border-radius: 8px;
+  color: var(--cream);
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.18s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 110px;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 100px;
+  white-space: nowrap;
+}
+.submit-btn:hover { background: var(--accent); }
+.submit-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.spinner {
+  width: 14px; height: 14px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: none;
+}
+.submit-btn.loading .spinner { display: block; }
+.submit-btn.loading .btn-text { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* File mode */
+.file-row { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
+.dropzone {
+  background: var(--cream2);
+  border: 1px dashed var(--border2);
+  border-radius: 8px;
+  height: 110px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.18s;
+  position: relative;
+  text-align: center;
+  padding: 16px;
+}
+.dropzone:hover, .dropzone.drag { border-color: var(--accent); background: var(--accent-l); }
+.dropzone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.dz-main { font-size: 13px; color: var(--ink2); }
+.dz-main strong { color: var(--ink); font-weight: 500; }
+.dz-formats { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--ink3); letter-spacing: 0.05em; }
+.file-name { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--accent); display: none; margin-top: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.file-actions { display: flex; flex-direction: column; gap: 8px; height: 110px; }
+.file-submit {
+  flex: 1;
+  padding: 0 20px;
+  background: var(--ink);
+  border: none;
+  border-radius: 8px;
+  color: var(--cream);
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.file-submit:hover { background: var(--accent); }
+.file-submit:disabled { opacity: 0.3; cursor: not-allowed; }
+.sample-btn {
+  flex: 0;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 12px;
+  color: var(--ink2);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.sample-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Mic mode */
+.mic-row { display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: center; height: 110px; }
+.mic-btn {
+  width: 70px; height: 70px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border2);
+  background: var(--cream2);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.mic-btn:hover { border-color: var(--accent); background: var(--accent-l); }
+.mic-btn.recording { border-color: var(--red); background: rgba(122,34,21,0.07); animation: mpulse 2s ease-in-out infinite; }
+@keyframes mpulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(122,34,21,0.2); }
+  50%      { box-shadow: 0 0 0 10px rgba(122,34,21,0); }
+}
+.mic-btn svg { width: 22px; height: 22px; fill: var(--ink2); transition: fill 0.2s; }
+.mic-btn:hover svg, .mic-btn.recording svg { fill: var(--ink); }
+
+.mic-info { display: flex; flex-direction: column; gap: 8px; }
+.mic-status {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+.mic-status.live { color: var(--red); }
+#waveform { width: 100%; height: 32px; opacity: 0; transition: opacity 0.4s; }
+#waveform.show { opacity: 1; }
+.mic-hint { font-size: 11px; color: var(--ink3); line-height: 1.6; }
+
+/* ── Footer ─────────────────────────────────────────── */
+footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.footer-l { font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.08em; color: var(--ink3); text-transform: uppercase; }
+.footer-r { font-size: 11px; color: var(--ink3); font-family: 'DM Mono', monospace; }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--cream);
+  border: 1px solid var(--border2);
+  color: var(--red);
+  padding: 10px 18px;
+  border-radius: 7px;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.22s;
+  z-index: 100;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.07);
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+@media (max-width: 640px) {
+  .result-hero { grid-template-columns: 1fr; }
+  .result-right { min-width: unset; border-top: 1px solid var(--border); padding-top: 20px; }
+  .emotion-display { font-size: 52px; }
+  .text-row, .file-row, .mic-row { grid-template-columns: 1fr; }
+  .submit-btn, .file-actions { height: auto; }
+  .submit-btn { flex-direction: row; height: 44px; }
+  .shell { padding: 0 16px 40px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div>
+      <span class="wordmark">Emotion Predictor</span>
+      <span class="wordmark-sub" id="wordmarkSub">感情予測</span>
+    </div>
+    <div class="header-right">
+      <div class="lang-toggle">
+        <button class="lang-btn active" onclick="setLang('en')">EN</button>
+        <button class="lang-btn" onclick="setLang('ja')">JA</button>
+      </div>
+      <div class="status-pill">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">—</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero result -->
+  <div class="result-hero">
+    <div class="result-left">
+      <div class="result-eyebrow" id="resultEyebrow">— / prediction</div>
+      <div class="emotion-display" id="emotionDisplay">—</div>
+      <div class="result-stats" id="resultStats" style="display:none">
+        <div class="stat">
+          <span class="stat-val conf" id="confVal">—</span>
+          <span class="stat-key" id="keyConf">confidence</span>
+        </div>
+        <div class="stat">
+          <span class="stat-val" id="valVal">—</span>
+          <span class="stat-key" id="keyVal">valence</span>
+        </div>
+        <div class="stat">
+          <span class="stat-val" id="aroVal">—</span>
+          <span class="stat-key" id="keyAro">arousal</span>
+        </div>
+      </div>
+      <div class="routing" id="routingRow">
+        <div class="route-item">
+          <span id="rtextLabel">text</span>
+          <div class="route-track"><div class="route-fill" id="rtextFill"></div></div>
+          <span id="rtextVal">—</span>
+        </div>
+        <div class="route-item">
+          <span id="raudioLabel">audio</span>
+          <div class="route-track"><div class="route-fill" id="raudioFill"></div></div>
+          <span id="raudioVal">—</span>
+        </div>
+      </div>
+      <div class="empty-state" id="emptyState">
+        <div class="empty-line" id="emptyLine1">No prediction yet.</div>
+        <div class="empty-line" id="emptyLine2">Enter text or upload audio below.</div>
+      </div>
+    </div>
+
+    <div class="result-right" id="probBars"></div>
+  </div>
+
+  <!-- Input section -->
+  <div class="input-section">
+    <div class="input-header">
+      <div class="input-label" id="inputLabel">input</div>
+      <div class="mode-tabs">
+        <button class="tab active" data-mode="text" onclick="switchMode('text')" id="tabText">Text</button>
+        <button class="tab" data-mode="file" onclick="switchMode('file')" id="tabFile">File</button>
+        <button class="tab" data-mode="mic" onclick="switchMode('mic')" id="tabMic">Mic</button>
+      </div>
+    </div>
+
+    <!-- Text mode -->
+    <div class="input-area visible" id="area-text">
+      <div class="text-row">
+        <textarea id="textInput" placeholder="Enter Japanese text here…"></textarea>
+        <button class="submit-btn" id="textBtn" onclick="predictText()">
+          <div class="spinner"></div>
+          <span class="btn-text" id="textBtnLabel">Predict</span>
+        </button>
+      </div>
+      <div>
+        <div class="chips-label" id="chipsLabel">Examples — click to load</div>
+        <div class="chips" id="chipsContainer"></div>
+      </div>
+    </div>
+
+    <!-- File mode -->
+    <div class="input-area" id="area-file">
+      <div class="file-row">
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept=".wav,.flac,.mp3,.m4a,.ogg" onchange="onFileSelect(event)">
+          <div class="dz-main" id="dzMain"><strong>Click or drop</strong> an audio file</div>
+          <div class="dz-formats">wav · flac · mp3 · m4a · ogg</div>
+          <div class="file-name" id="fileName"></div>
+        </div>
+        <div class="file-actions">
+          <button class="file-submit" id="fileBtn" onclick="predictFile()" disabled>
+            <div class="spinner"></div>
+            <span class="btn-text" id="fileBtnLabel">Predict</span>
+          </button>
+          <button class="sample-btn" id="sampleBtn" onclick="loadSample()">
+            <span id="sampleBtnLabel">Try a sample</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mic mode -->
+    <div class="input-area" id="area-mic">
+      <div class="mic-row">
+        <button class="mic-btn" id="micBtn" onclick="toggleMic()">
+          <svg viewBox="0 0 24 24"><path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4zm-7 10a7 7 0 0 0 14 0h-2a5 5 0 0 1-10 0H5zm7 9v-3h-2v3H7v2h10v-2h-3z"/></svg>
+        </button>
+        <div class="mic-info">
+          <div class="mic-status" id="micStatus">Tap to start</div>
+          <canvas id="waveform" width="480" height="32"></canvas>
+          <div class="mic-hint" id="micHint">Predictions update every 500ms. Audio processed at 16kHz server-side.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <div class="footer-l">MoE Emotion Predictor · v0.1</div>
+    <div class="footer-r" id="footerNote">macro F1 0.303 · 7 classes</div>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = 'http://localhost:8000';
+const WS  = 'ws://localhost:8000';
+const EMOTIONS = ['happy','sad','angry','neutral','anxious','surprised','disgusted'];
+
+// ── Language ───────────────────────────────────────────────────────────────────
+const L = {
+  en: {
+    tabText:'Text', tabFile:'File', tabMic:'Mic',
+    inputLabel:'input',
+    chipsLabel:'Examples — click to load',
+    dzMain:'<strong>Click or drop</strong> an audio file',
+    sampleBtnLabel:'Try a sample',
+    textPlaceholder:'Enter Japanese text here…',
+    textBtnLabel:'Predict', fileBtnLabel:'Predict',
+    micIdle:'Tap to start', micLive:'Recording…',
+    micHint:'Predictions update every 500ms. Audio processed at 16kHz server-side.',
+    keyConf:'confidence', keyVal:'valence', keyAro:'arousal',
+    emptyLine1:'No prediction yet.',
+    emptyLine2:'Enter text or upload audio below.',
+    modText:'text', modAudio:'audio', modMulti:'multimodal',
+    rtextLabel:'text', raudioLabel:'audio',
+    statusLive:'live',
+    footerNote:'macro F1 0.303 · 7 classes',
+    chips:[
+      {l:"I'm really happy today!",      t:"I'm really happy today!"},
+      {l:'I feel so sad.',                t:'I feel so sad.'},
+      {l:"I can't take this anymore!",   t:"I can't take this anymore!"},
+      {l:'Everything feels fine.',        t:'Everything feels fine.'},
+      {l:"I'm so worried.",               t:"I'm so worried."},
+      {l:'Oh wow, I had no idea!',        t:'Oh wow, I had no idea!'},
+      {l:'That was truly disgusting.',    t:'That was truly disgusting.'},
+    ],
+  },
+  ja: {
+    tabText:'テキスト', tabFile:'ファイル', tabMic:'マイク',
+    inputLabel:'入力',
+    chipsLabel:'例文 — クリックで入力',
+    dzMain:'<strong>クリックまたはドロップ</strong>して音声を選択',
+    sampleBtnLabel:'サンプルを試す',
+    textPlaceholder:'日本語のテキストを入力してください…',
+    textBtnLabel:'予測する', fileBtnLabel:'予測する',
+    micIdle:'タップして開始', micLive:'録音中…',
+    micHint:'500msごとに予測が更新されます。音声はサーバー側で16kHzで処理されます。',
+    keyConf:'確信度', keyVal:'バレンス', keyAro:'アロウザル',
+    emptyLine1:'予測結果はまだありません。',
+    emptyLine2:'下のテキストまたは音声から予測できます。',
+    modText:'テキスト', modAudio:'音声', modMulti:'マルチモーダル',
+    rtextLabel:'テキスト', raudioLabel:'音声',
+    statusLive:'ライブ',
+    footerNote:'マクロF1 0.303 · 7クラス',
+    chips:[
+      {l:'嬉しくて仕方ない！',      t:'嬉しくて仕方ない！'},
+      {l:'今日は本当に悲しい。',     t:'今日は本当に悲しい。'},
+      {l:'もう我慢できない！',       t:'もう我慢できない！'},
+      {l:'特に何も感じない。',       t:'特に何も感じない。'},
+      {l:'また失敗してしまった…',   t:'また失敗してしまった…'},
+      {l:'えっ、本当に？！',         t:'えっ、本当に？！'},
+      {l:'あの人のことが嫌い。',     t:'あの人のことが嫌い。'},
+    ],
+  },
+};
+
+let lang = 'en';
+
+function setLang(l) {
+  lang = l;
+  document.querySelectorAll('.lang-btn').forEach(b =>
+    b.classList.toggle('active', b.textContent === l.toUpperCase()));
+  applyLang();
+}
+
+function applyLang() {
+  const c = L[lang];
+  document.getElementById('tabText').textContent   = c.tabText;
+  document.getElementById('tabFile').textContent   = c.tabFile;
+  document.getElementById('tabMic').textContent    = c.tabMic;
+  document.getElementById('inputLabel').textContent = c.inputLabel;
+  document.getElementById('chipsLabel').textContent = c.chipsLabel;
+  document.getElementById('dzMain').innerHTML      = c.dzMain;
+  document.getElementById('sampleBtnLabel').textContent = c.sampleBtnLabel;
+  document.getElementById('textInput').placeholder = c.textPlaceholder;
+  document.getElementById('textBtnLabel').textContent  = c.textBtnLabel;
+  document.getElementById('fileBtnLabel').textContent  = c.fileBtnLabel;
+  document.getElementById('micHint').textContent   = c.micHint;
+  document.getElementById('keyConf').textContent   = c.keyConf;
+  document.getElementById('keyVal').textContent    = c.keyVal;
+  document.getElementById('keyAro').textContent    = c.keyAro;
+  document.getElementById('emptyLine1').textContent = c.emptyLine1;
+  document.getElementById('emptyLine2').textContent = c.emptyLine2;
+  document.getElementById('rtextLabel').textContent  = c.rtextLabel;
+  document.getElementById('raudioLabel').textContent = c.raudioLabel;
+  document.getElementById('footerNote').textContent  = c.footerNote;
+  if (!isRecording) document.getElementById('micStatus').textContent = c.micIdle;
+  buildChips();
+}
+
+function buildChips() {
+  const container = document.getElementById('chipsContainer');
+  container.innerHTML = L[lang].chips.map(ch =>
+    `<button class="chip" data-chip-text="${ch.t.replace(/"/g,'&quot;')}">${ch.l}</button>`
+  ).join('');
+  container.querySelectorAll('.chip').forEach(btn =>
+    btn.addEventListener('click', () => loadChip(btn.dataset.chipText))
+  );
+}
+
+function loadChip(t) {
+  document.getElementById('textInput').value = t;
+  document.getElementById('textInput').focus();
+}
+
+// ── Prob bars init ─────────────────────────────────────────────────────────────
+function buildProbBars() {
+  document.getElementById('probBars').innerHTML = EMOTIONS.map(e =>
+    `<div class="prob-row" id="row-${e}">
+       <span class="prob-name">${e}</span>
+       <div class="prob-track"><div class="prob-bar" id="bar-${e}"></div></div>
+       <span class="prob-pct" id="pct-${e}">—</span>
+     </div>`
+  ).join('');
+}
+buildProbBars();
+
+// ── Mode switch ────────────────────────────────────────────────────────────────
+let currentMode = 'text';
+function switchMode(mode) {
+  if (currentMode === 'mic' && isRecording) stopMic();
+  currentMode = mode;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  document.querySelectorAll('.input-area').forEach(a => a.classList.remove('visible'));
+  document.getElementById('area-' + mode).classList.add('visible');
+}
+
+// ── Dropzone ───────────────────────────────────────────────────────────────────
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+
+let selectedFile = null;
+function onFileSelect(e) { if (e.target.files[0]) setFile(e.target.files[0]); }
+function setFile(f) {
+  selectedFile = f;
+  document.getElementById('fileName').style.display = 'block';
+  document.getElementById('fileName').textContent = f.name;
+  document.getElementById('fileBtn').disabled = false;
+}
+
+async function loadSample() {
+  const btn = document.getElementById('sampleBtn');
+  btn.disabled = true; btn.style.opacity = '0.5';
+  try {
+    const res = await fetch(`${API}/predict/sample`);
+    if (!res.ok) throw new Error('Sample endpoint coming in Milestone 2');
+    const blob = await res.blob();
+    setFile(new File([blob], 'sample.wav', { type: 'audio/wav' }));
+    showToast(lang === 'ja' ? 'サンプルを読み込みました' : 'Sample loaded');
+  } catch (e) { showToast(e.message); }
+  finally { btn.disabled = false; btn.style.opacity = ''; }
+}
+
+// ── Render result ──────────────────────────────────────────────────────────────
+function renderResult(r) {
+  const c = L[lang];
+  const el = document.getElementById('emotionDisplay');
+  el.textContent = r.emotion.toUpperCase();
+  el.classList.add('has-result');
+
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('resultStats').style.display = 'flex';
+
+  document.getElementById('confVal').textContent = (r.confidence * 100).toFixed(0) + '%';
+  document.getElementById('valVal').textContent  = r.valence.toFixed(1);
+  document.getElementById('aroVal').textContent  = r.arousal.toFixed(1);
+
+  const mmap = { text: c.modText, audio: c.modAudio, multimodal: c.modMulti };
+  document.getElementById('resultEyebrow').textContent = (mmap[r.modality] || r.modality) + ' / prediction';
+
+  const rr = document.getElementById('routingRow');
+  if (r.text_weight != null) {
+    rr.classList.add('show');
+    document.getElementById('rtextFill').style.width  = (r.text_weight * 100)  + '%';
+    document.getElementById('raudioFill').style.width = (r.audio_weight * 100) + '%';
+    document.getElementById('rtextVal').textContent   = (r.text_weight * 100).toFixed(0)  + '%';
+    document.getElementById('raudioVal').textContent  = (r.audio_weight * 100).toFixed(0) + '%';
+  } else rr.classList.remove('show');
+
+  const probs = r.all_probs || {};
+  EMOTIONS.forEach(e => {
+    const p = probs[e] || 0;
+    document.getElementById('bar-' + e).style.width = (p * 100) + '%';
+    document.getElementById('pct-' + e).textContent = (p * 100).toFixed(0) + '%';
+    document.getElementById('row-' + e).classList.toggle('top', e === r.emotion);
+  });
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+// ── Loading ────────────────────────────────────────────────────────────────────
+function setLoad(id, v) {
+  const b = document.getElementById(id);
+  b.classList.toggle('loading', v); b.disabled = v;
+}
+
+// ── Text predict ───────────────────────────────────────────────────────────────
+async function predictText() {
+  const text = document.getElementById('textInput').value.trim();
+  if (!text) { showToast(lang === 'ja' ? 'テキストを入力してください' : 'Please enter some text'); return; }
+  setLoad('textBtn', true);
+  try {
+    const res = await fetch(`${API}/predict/text`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    renderResult(await res.json());
+  } catch (e) { showToast('Error: ' + e.message); }
+  finally { setLoad('textBtn', false); }
+}
+document.getElementById('textInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) predictText();
+});
+
+// ── File predict ───────────────────────────────────────────────────────────────
+async function predictFile() {
+  if (!selectedFile) return;
+  setLoad('fileBtn', true);
+  try {
+    const fd = new FormData(); fd.append('audio', selectedFile);
+    const res = await fetch(`${API}/predict/file`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    renderResult(await res.json());
+  } catch (e) { showToast('Error: ' + e.message); }
+  finally { setLoad('fileBtn', false); }
+}
+
+// ── Mic ────────────────────────────────────────────────────────────────────────
+let isRecording = false, audioCtx = null, micStream = null;
+let ws = null, analyser = null, animFrame = null, processor = null;
+
+const wcanvas = document.getElementById('waveform');
+const wctx = wcanvas.getContext('2d');
+
+async function toggleMic() { isRecording ? stopMic() : await startMic(); }
+
+async function startMic() {
+  try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); }
+  catch { showToast(lang === 'ja' ? 'マイクへのアクセスが拒否されました' : 'Microphone access denied'); return; }
+
+  audioCtx = new AudioContext();
+  const nativeSR = audioCtx.sampleRate;
+  const src = audioCtx.createMediaStreamSource(micStream);
+
+  analyser = audioCtx.createAnalyser(); analyser.fftSize = 512;
+  src.connect(analyser);
+
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  src.connect(processor);
+  // Route through a silent gain node — required for onaudioprocess to fire
+  // but we don't want to send mic audio to speakers
+  const silentGain = audioCtx.createGain();
+  silentGain.gain.value = 0;
+  processor.connect(silentGain);
+  silentGain.connect(audioCtx.destination);
+
+  ws = new WebSocket(`${WS}/predict/stream?native_sr=${nativeSR}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    isRecording = true;
+    document.getElementById('micBtn').classList.add('recording');
+    document.getElementById('micStatus').textContent = L[lang].micLive;
+    document.getElementById('micStatus').classList.add('live');
+    wcanvas.classList.add('show');
+    document.getElementById('statusDot').classList.add('live');
+    document.getElementById('statusText').textContent = L[lang].statusLive;
+    drawWave();
+  };
+  ws.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.error)   { showToast(d.error); return; }
+      if (d.skipped) { return; }  // silent chunk — keep last result shown
+      renderResult({...d, modality:'audio'});
+    } catch {}
+  };
+  ws.onerror = () => showToast('WebSocket error');
+  ws.onclose = () => { if (isRecording) stopMic(); };
+
+  let buf = [];
+  const needed = Math.floor(nativeSR * 0.5);
+  processor.onaudioprocess = e => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    buf.push(...e.inputBuffer.getChannelData(0));
+    if (buf.length >= needed) { ws.send(new Float32Array(buf.splice(0, needed)).buffer); buf = []; }
+  };
+}
+
+function stopMic() {
+  isRecording = false;
+  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if (processor) { try { processor.disconnect(); } catch {} processor = null; }
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.close(); ws = null;
+  document.getElementById('micBtn').classList.remove('recording');
+  document.getElementById('micStatus').textContent = L[lang].micIdle;
+  document.getElementById('micStatus').classList.remove('live');
+  wcanvas.classList.remove('show');
+  wctx.clearRect(0, 0, wcanvas.width, wcanvas.height);
+  document.getElementById('statusDot').classList.remove('live');
+  document.getElementById('statusText').textContent = '—';
+}
+
+function drawWave() {
+  if (!analyser || !isRecording) return;
+  animFrame = requestAnimationFrame(drawWave);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteTimeDomainData(buf);
+  const w = wcanvas.width, h = wcanvas.height;
+  wctx.clearRect(0, 0, w, h);
+  wctx.strokeStyle = 'rgba(28,24,20,0.25)';
+  wctx.lineWidth = 1.5; wctx.beginPath();
+  buf.forEach((v, i) => {
+    const x = (i / buf.length) * w, y = (v / 128) * (h / 2);
+    i === 0 ? wctx.moveTo(x, y) : wctx.lineTo(x, y);
+  });
+  wctx.stroke();
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+buildChips();
+</script>
+</body>
+</html>
