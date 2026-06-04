@@ -1,0 +1,60 @@
+training:
+  epochs: 40
+  batch_size: 64
+  cached_batch_size: 512
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_steps: 200
+  gradient_clip: 1.0
+  grad_accumulation_steps: 2
+  max_steps_per_epoch: 60
+
+  loss:
+    classification_weight: 0.6
+    regression_weight: 0.4
+    classification: "cross_entropy"
+    regression: "mse"
+
+  optimizer: "adamw"
+  scheduler: "cosine_with_warmup"
+
+  early_stopping:
+    patience: 5
+    metric: "val_f1_macro"
+    mode: "max"
+
+  save_best_only: true
+  ravdess_ratio: 2
+  log_every_n_steps: 25
+
+  # Phase 2 settings (fixed)
+  phase2_epochs: 15
+  phase2_max_steps: 75          # was 25 — enough steps to stabilise
+  phase2_ravdess_ratio: 0       # text-only; audio too slow on MPS
+  phase2_unfreeze_layers: 1     # was 2 — unfreeze only final layer (~7M params)
+  phase2_lr_divisor: 40         # LR = base_lr / 40 = 5e-7  (was / 5 = 4e-6, too high)
+
+data:
+  wrime_min_intensity: 0.34
+  ravdess_path: "data/raw/ravdess"
+  max_audio_duration_s: 3.0
+
+  ravdess_splits:
+    train: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]
+    val:   [19,20,21]
+    test:  [22,23,24]
+
+  augmentation:
+    text:
+      enabled: false
+    audio:
+      enabled: false
+
+evaluation:
+  metrics:
+    - accuracy
+    - f1_macro
+    - f1_weighted
+    - rmse_valence
+    - rmse_arousal
+  primary_metric: "f1_macro"

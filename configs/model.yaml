@@ -1,0 +1,37 @@
+text_encoder:
+  model_name: "cl-tohoku/bert-base-japanese-v3"
+  hidden_size: 768
+  max_length: 64                     # was 128; halves sequence processing time
+  freeze_layers: 10                  # freeze 10/12 layers; train only last 2 + projection
+
+audio_encoder:
+  model_name: "facebook/wav2vec2-base"
+  hidden_size: 768
+  sample_rate: 16000
+  freeze_layers: 10                  # freeze 10/12 layers; train only last 2 + projection
+
+router:
+  hidden_size: 256
+  expert_hidden_size: 768
+  temperature: 1.0
+  top_k: 2
+
+fusion:
+  type: "weighted_gate"
+  hidden_size: 512
+  expert_hidden_size: 768
+  dropout: 0.1
+
+heads:
+  classification:
+    num_classes: 7
+    hidden_size: 256
+    dropout: 0.3
+  regression:
+    output_size: 2
+    hidden_size: 256
+    dropout: 0.3
+
+moe:
+  experts: ["text", "audio"]
+  num_experts: 2
