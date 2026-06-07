@@ -106,9 +106,6 @@ Japanese text string ───────────────────�
 python data/download_ravdess.py   # ~1.6 GB from Zenodo
 ```
 
-### Why not DEAP?
-DEAP was the original plan. It was removed entirely because DEAP contains EEG and physiological signals from people watching music videos — no speech, no text, no Japanese. It cannot be used as training input for this system. Its valence/arousal scale (1–9) is kept as a labelling convention only.
-
 ### Emotion label derivation
 
 Both datasets map to our 7 classes via `data/emotion_mappings.py`:
@@ -240,28 +237,6 @@ result = model.predict(text="悲しいね", audio=waveform)
 print(result["valence"].item())    # e.g. 2.4
 print(result["arousal"].item())    # e.g. 3.1
 ```
-
----
-
-## Roadmap
-
-- [x] Configs
-- [x] Text encoder (Japanese BERT)
-- [x] Audio encoder (Wav2Vec2, soundfile-based, deployment-ready)
-- [x] MoE Router
-- [x] Weighted Fusion
-- [x] Dual emotion head (classification + regression)
-- [x] Emotion label mappings
-- [x] WRIME dataset (Japanese text)
-- [x] RAVDESS dataset (English audio)
-- [x] Combined DataLoaders + WeightedRandomSampler
-- [x] Feature caching pipeline
-- [x] Training loop with class weights + label smoothing
-- [x] Training performance log
-- [ ] `inference/pipeline.py`
-- [ ] `api/` — FastAPI HTTP + WebSocket endpoints
-- [ ] `frontend/` — Web Audio API mic capture + WebSocket client
-- [ ] Per-user calibration (`personalization/`)
 
 ---
 

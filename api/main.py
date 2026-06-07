@@ -58,7 +58,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://chibihime.github.io"],      # tighten in production
+    allow_origins=["https://chibihime.github.io"],      
     allow_methods=["*"],
     allow_headers=["*"],
 )

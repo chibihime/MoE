@@ -1,88 +1,31 @@
-# =============================================================================
-# MoE Emotion Predictor — Requirements
-# Python 3.10+
-# Install: pip install -r requirements.txt
-#
-# Deployment note: audio capture is handled client-side (browser/mobile).
-# The server receives raw PCM bytes (WebSocket) or audio files (HTTP upload).
-# pyaudio and webrtcvad are NOT required on the server.
-# =============================================================================
-
-# -----------------------------------------------------------------------------
-# Core ML / Deep Learning
-# -----------------------------------------------------------------------------
 torch>=2.2.0
-torchaudio>=2.2.0                  # audio decoding, resampling
-torchvision>=0.17.0                # reserved for future visual modality
+torchaudio>=2.2.0
 
-# -----------------------------------------------------------------------------
-# HuggingFace — models, tokenizers, training utilities
-# -----------------------------------------------------------------------------
-transformers>=4.40.0               # BERT Japanese, Wav2Vec2
-datasets>=2.18.0                   # dataset loading + splitting utilities
-accelerate>=0.29.0                 # multi-device training, mixed precision
-tokenizers>=0.19.0                 # fast tokenizer backend
+transformers>=4.40.0
+tokenizers>=0.19.0
 
-# -----------------------------------------------------------------------------
-# Japanese NLP — required for cl-tohoku/bert-base-japanese-v3
-# -----------------------------------------------------------------------------
-fugashi>=1.3.0                     # MeCab wrapper (Japanese morphological analyzer)
-ipadic>=1.0.0                      # IPAdic dictionary for fugashi/MeCab
-unidic-lite>=1.0.8                 # lightweight UniDic dictionary (fallback)
-sentencepiece>=0.2.0               # SentencePiece tokenization support
+fugashi>=1.3.0
+ipadic>=1.0.0
+unidic-lite>=1.0.8
+sentencepiece>=0.2.0
 
-# -----------------------------------------------------------------------------
-# Audio Processing (server-side: decode + resample only; no mic capture)
-# -----------------------------------------------------------------------------
-librosa>=0.10.1                    # resampling to 16kHz, training augmentation
-soundfile>=0.12.1                  # wav/flac file decoding (libsndfile backend)
-scipy>=1.12.0                      # signal processing, filtering
+librosa>=0.10.1
+soundfile>=0.12.1
+scipy>=1.12.0
 
-# -----------------------------------------------------------------------------
-# Data & Scientific Computing
-# -----------------------------------------------------------------------------
 numpy>=1.26.0
 pandas>=2.2.0
-scikit-learn>=1.4.0                # F1, accuracy, preprocessing, train/val/test splits
+scikit-learn>=1.4.0
 
-# -----------------------------------------------------------------------------
-# Configuration Management
-# -----------------------------------------------------------------------------
-pyyaml>=6.0.1                      # configs/base.yaml, model.yaml, train.yaml
-omegaconf>=2.3.0                   # structured config composition
+pyyaml>=6.0.1
+omegaconf>=2.3.0
 
-# -----------------------------------------------------------------------------
-# API Layer (FastAPI)
-# -----------------------------------------------------------------------------
 fastapi>=0.110.0
-uvicorn[standard]>=0.29.0          # ASGI server
-python-multipart>=0.0.9            # multipart/form-data for audio file uploads
-pydantic>=2.6.0                    # request/response schema validation
-websockets>=12.0                   # WebSocket support for real-time stream endpoint
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+pydantic>=2.6.0
+websockets>=12.0
 
-# -----------------------------------------------------------------------------
-# Training Utilities
-# -----------------------------------------------------------------------------
-tqdm>=4.66.0                       # progress bars
-tensorboard>=2.16.0                # loss / metric visualisation
-wandb>=0.16.0                      # experiment tracking (comment out if unused)
-
-# -----------------------------------------------------------------------------
-# Evaluation & Metrics
-# -----------------------------------------------------------------------------
-torchmetrics>=1.3.0                # F1, RMSE, accuracy with GPU support
-
-# -----------------------------------------------------------------------------
-# Notebooks (local dev only — safe to omit in production Docker image)
-# -----------------------------------------------------------------------------
-jupyter>=1.0.0
-ipywidgets>=8.1.0
-matplotlib>=3.8.0
-seaborn>=0.13.0                    # confusion matrices, valence/arousal plots
-
-# -----------------------------------------------------------------------------
-# Utilities
-# -----------------------------------------------------------------------------
-python-dotenv>=1.0.0               # environment variable management
-click>=8.1.7                       # CLI for training / inference scripts
-rich>=13.7.0                       # pretty terminal output
+python-dotenv>=1.0.0
+click>=8.1.7
+rich>=13.7.0
