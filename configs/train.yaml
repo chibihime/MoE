@@ -36,11 +36,12 @@ training:
   phase2_epochs: 20
   phase2_max_steps: 150         # doubled — gives fine-tuning more gradient steps
   phase2_ravdess_ratio: 0       # text-only; audio too slow on MPS
-  phase2_unfreeze_layers: 1     # was 2 — unfreeze only final layer (~7M params)
-  phase2_lr_divisor: 40         # LR = base_lr / 40 = 5e-7  (was / 5 = 4e-6, too high)
+  phase2_unfreeze_layers: 1     # unfreeze only final BERT layer
+  phase2_unfreeze_audio: false  # keep Wav2Vec2 frozen — Phase 2 is text-only
+  phase2_lr_divisor: 4          # LR = base_lr / 4 = 5e-6 for head (was /40 = 5e-7, too slow)
 
 data:
-  wrime_min_intensity: 0.34
+  wrime_min_intensity: 0.0    # use full WRIME dataset; noisy samples hurt less than reduced coverage
   ravdess_path: "data/raw/ravdess"
   max_audio_duration_s: 3.0
 

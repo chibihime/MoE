@@ -258,9 +258,11 @@ class EarlyStopping:
 
 # ── Unfreeze top encoder layers (phase 2) ─────────────────────────────────────
 
-def unfreeze_top_layers(model, n_layers=1):
-    for encoder, name in [(model.text_encoder, "BERT"),
-                          (model.audio_encoder, "Wav2Vec2")]:
+def unfreeze_top_layers(model, n_layers=1, unfreeze_audio=True):
+    encoders = [(model.text_encoder, "BERT")]
+    if unfreeze_audio:
+        encoders.append((model.audio_encoder, "Wav2Vec2"))
+    for encoder, name in encoders:
         if n_layers > 0:
             try:
                 layers = encoder.encoder.encoder.layer
@@ -361,9 +363,11 @@ def main():
             model.load_state_dict(
                 torch.load(p1_ckpt, map_location=device)["model"]
             )
-        n_unfreeze = config["training"].get("phase2_unfreeze_layers", 1)
-        print(f"Unfreezing top {n_unfreeze} encoder layer(s)...")
-        unfreeze_top_layers(model, n_layers=n_unfreeze)
+        n_unfreeze     = config["training"].get("phase2_unfreeze_layers", 1)
+        unfreeze_audio = config["training"].get("phase2_unfreeze_audio", True)
+        print(f"Unfreezing top {n_unfreeze} encoder layer(s) "
+              f"(audio={'yes' if unfreeze_audio else 'frozen'})...")
+        unfreeze_top_layers(model, n_layers=n_unfreeze, unfreeze_audio=unfreeze_audio)
     elif use_cache:
         for p in model.text_encoder.parameters():  p.requires_grad = False
         for p in model.audio_encoder.parameters(): p.requires_grad = False
