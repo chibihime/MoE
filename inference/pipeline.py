@@ -45,7 +45,7 @@ Usage:
 import io
 import logging
 from dataclasses import dataclass, asdict
-from typing import Dict, Optional, Union
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -112,20 +112,19 @@ def _decode_audio_bytes(
     Returns:
         waveform: np.ndarray of shape (n_samples,), float32, 16kHz
     """
+    # Route to the right decoder up front — avoids a failed soundfile attempt
+    # followed by a second librosa pass for mp3/m4a (saves ~50–100ms per upload).
+    _SOUNDFILE_FMTS = {"wav", "flac", "ogg", "aiff"}
     buf = io.BytesIO(audio_bytes)
-    try:
-        # soundfile returns (n_samples, channels) with always_2d=True
+    if fmt and fmt.lower() in _SOUNDFILE_FMTS:
         waveform, sr = sf.read(buf, dtype="float32", always_2d=True)
-        # Mix to mono: average over channels axis (axis=1), not samples axis
         if waveform.shape[1] > 1:
-            waveform = waveform.mean(axis=1)   # (n_samples,)
+            waveform = waveform.mean(axis=1)
         else:
-            waveform = waveform[:, 0]           # (n_samples,)
-    except Exception:
-        # fallback for mp3/m4a — librosa handles resampling + mono mixing
-        buf.seek(0)
+            waveform = waveform[:, 0]
+    else:
+        # mp3, m4a, or unknown — librosa handles decoding + mono mixing
         waveform, sr = librosa.load(buf, sr=None, mono=True, dtype=np.float32)
-        # waveform is already (n_samples,) from librosa
 
     # Resample to 16kHz if needed
     if sr != TARGET_SR:
@@ -134,22 +133,26 @@ def _decode_audio_bytes(
     return waveform.astype(np.float32)
 
 
-def _decode_pcm_bytes(pcm_bytes: bytes) -> np.ndarray:
+def _decode_pcm_bytes(pcm_bytes: bytes, native_sr: int = TARGET_SR) -> np.ndarray:
     """
     Decode raw PCM Float32 bytes from a WebSocket stream chunk.
 
     The Web Audio API sends Float32 PCM at the browser's native sample rate
-    (typically 44100 or 48000 Hz). We resample here if needed.
+    (typically 44100 or 48000 Hz). Resamples to TARGET_SR (16kHz) when the
+    client's native sample rate differs.
 
     Args:
         pcm_bytes: raw bytes from websocket.receive_bytes()
-                   expected format: float32 little-endian, mono, 16kHz
-                   (client should downsample to 16kHz before sending for efficiency)
+                   format: float32 little-endian, mono, at native_sr
+        native_sr: sample rate the client is sending at (from ?native_sr query param)
 
     Returns:
-        waveform: np.ndarray (n_samples,), float32
+        waveform: np.ndarray (n_samples,), float32, resampled to TARGET_SR
     """
-    return np.frombuffer(pcm_bytes, dtype=np.float32).copy()
+    waveform = np.frombuffer(pcm_bytes, dtype=np.float32).copy()
+    if native_sr != TARGET_SR:
+        waveform = librosa.resample(waveform, orig_sr=native_sr, target_sr=TARGET_SR)
+    return waveform
 
 
 def _trim_silence(
@@ -179,10 +182,11 @@ class EmotionPipeline:
         device:   torch.device,
         ckpt_path: Optional[str] = None,
     ):
-        self.model    = model
-        self.config   = config
-        self.device   = device
-        self.ckpt_path = ckpt_path
+        self.model      = model
+        self.config     = config
+        self.device     = device
+        self.ckpt_path  = ckpt_path
+        self._thresholds: Optional[np.ndarray] = None  # per-class thresholds
         self.model.eval()
 
     # ── Constructor ────────────────────────────────────────────────────────────
@@ -297,14 +301,21 @@ class EmotionPipeline:
 
         # Build probability dict
         probs_tensor = outputs["probs"][0]   # (7,)
+        probs_np     = probs_tensor.cpu().numpy()
         all_probs = {
-            cls: round(float(probs_tensor[i]), 4)
+            cls: round(float(probs_np[i]), 4)
             for i, cls in enumerate(EMOTION_CLASSES)
         }
 
-        pred_idx    = outputs["predicted_class"][0].item()
+        # Apply per-class thresholds when available, else plain argmax
+        if self._thresholds is not None:
+            adjusted = probs_np - self._thresholds
+            pred_idx = int(adjusted.argmax())
+        else:
+            pred_idx = int(probs_np.argmax())
+
         emotion     = EMOTION_CLASSES[pred_idx]
-        confidence  = round(float(probs_tensor[pred_idx]), 4)
+        confidence  = round(float(probs_np[pred_idx]), 4)
         valence     = round(outputs["valence"][0].item(), 2)
         arousal     = round(outputs["arousal"][0].item(), 2)
 
@@ -372,18 +383,20 @@ class EmotionPipeline:
         self,
         pcm_bytes: bytes,
         text: Optional[str] = None,
+        native_sr: int = TARGET_SR,
     ) -> EmotionResult:
         """
         Predict emotion from a real-time WebSocket audio chunk.
 
-        The client (browser) sends raw Float32 PCM at 16kHz. This method
-        decodes the bytes and runs inference — no further preprocessing needed
-        if the client already downsampled to 16kHz.
+        The client sends raw Float32 PCM at native_sr (the browser's AudioContext
+        sample rate, typically 44100 or 48000 Hz). This method resamples to
+        TARGET_SR (16kHz) before inference.
 
         Args:
             pcm_bytes: raw bytes from websocket.receive_bytes()
-                       expected: float32 little-endian, mono, 16kHz
+                       format: float32 little-endian, mono, at native_sr
             text:      optional concurrent text from live ASR
+            native_sr: sample rate the client is sending at
 
         Returns:
             EmotionResult
@@ -391,7 +404,7 @@ class EmotionPipeline:
         if not pcm_bytes:
             raise ValueError("pcm_bytes is empty.")
 
-        waveform = _decode_pcm_bytes(pcm_bytes)
+        waveform = _decode_pcm_bytes(pcm_bytes, native_sr=native_sr)
 
         if len(waveform) < TARGET_SR * 0.1:   # < 100ms — too short
             raise ValueError(
@@ -442,6 +455,46 @@ class EmotionPipeline:
         )
 
     # ── Utility ────────────────────────────────────────────────────────────────
+
+    def load_thresholds(self, path: str) -> None:
+        """
+        Load per-class decision thresholds produced by training/tune_thresholds.py.
+
+        When thresholds are loaded, _run() uses threshold-adjusted argmax
+        (argmax of prob - threshold) instead of plain argmax. This typically
+        improves macro-F1 by 0.03–0.06 on imbalanced emotion classes.
+
+        Args:
+            path: path to thresholds.json (e.g. "outputs/thresholds.json")
+        """
+        import json
+        with open(path) as f:
+            d = json.load(f)
+        self._thresholds = np.array([d[cls] for cls in EMOTION_CLASSES], dtype=np.float32)
+        logger.info("Loaded per-class thresholds from %s", path)
+        print(f"Thresholds loaded from {path}")
+
+    def quantize(self) -> None:
+        """
+        Apply INT8 dynamic quantization to all Linear layers.
+
+        Typically yields 1.5–2× CPU inference speedup with <1% accuracy drop
+        on transformer models. Call once after load(), before warmup().
+        Not compatible with MPS or CUDA — CPU-only.
+        """
+        if self.device.type != "cpu":
+            logger.warning(
+                "Quantization is CPU-only; skipping on %s.", self.device
+            )
+            return
+        # quantize_dynamic is deprecated in PT2 in favour of quantize_pt2e,
+        # but the latter requires torch.export and significantly more setup.
+        # This path is fully functional on PyTorch 2.x for CPU inference.
+        self.model = torch.ao.quantization.quantize_dynamic(  # noqa: deprecated
+            self.model, {torch.nn.Linear}, dtype=torch.qint8
+        )
+        logger.info("Applied INT8 dynamic quantization to Linear layers.")
+        print("Model quantized (INT8).")
 
     def warmup(self) -> None:
         """

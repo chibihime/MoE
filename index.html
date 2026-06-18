@@ -901,7 +901,9 @@ async function startMic() {
   try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }); }
   catch { showToast(lang === 'ja' ? 'マイクへのアクセスが拒否されました' : 'Microphone access denied'); return; }
 
-  audioCtx = new AudioContext();
+  // Request 16kHz directly — browser resamples mic for us; avoids server-side
+  // resampling overhead. Falls back to device native rate if unsupported.
+  audioCtx = new AudioContext({ sampleRate: 16000 });
   const nativeSR = audioCtx.sampleRate;
   const src = audioCtx.createMediaStreamSource(micStream);
 
