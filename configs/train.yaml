@@ -7,13 +7,18 @@ training:
   warmup_steps: 200
   gradient_clip: 1.0
   grad_accumulation_steps: 2
-  max_steps_per_epoch: 60
+  max_steps_per_epoch: 84    # covers full WRIME epoch (43K / batch 512 ≈ 84 steps)
 
   loss:
     classification_weight: 0.6
     regression_weight: 0.4
     classification: "cross_entropy"
     regression: "mse"
+    focal_gamma: 2.0              # Focal Loss γ — set to 0 to use plain CrossEntropy
+    # Phase 2 overrides: V/A targets are derived from labels (circular),
+    # so we reduce regression weight to let classification dominate fine-tuning.
+    phase2_classification_weight: 0.85
+    phase2_regression_weight: 0.15
 
   optimizer: "adamw"
   scheduler: "cosine_with_warmup"
@@ -28,8 +33,8 @@ training:
   log_every_n_steps: 25
 
   # Phase 2 settings (fixed)
-  phase2_epochs: 15
-  phase2_max_steps: 75          # was 25 — enough steps to stabilise
+  phase2_epochs: 20
+  phase2_max_steps: 150         # doubled — gives fine-tuning more gradient steps
   phase2_ravdess_ratio: 0       # text-only; audio too slow on MPS
   phase2_unfreeze_layers: 1     # was 2 — unfreeze only final layer (~7M params)
   phase2_lr_divisor: 40         # LR = base_lr / 40 = 5e-7  (was / 5 = 4e-6, too high)
@@ -48,7 +53,8 @@ data:
     text:
       enabled: false
     audio:
-      enabled: false
+      enabled: true
+      p: 0.5          # probability each transform fires per sample
 
 evaluation:
   metrics:

@@ -112,9 +112,15 @@ def compute_metrics(m):
 
 # ── Batch forward ──────────────────────────────────────────────────────────────
 
-def process_batch(batch, model, device, config, metrics, class_weights=None):
-    clf_w = config["training"]["loss"]["classification_weight"]
-    reg_w = config["training"]["loss"]["regression_weight"]
+def process_batch(batch, model, device, config, metrics, class_weights=None, phase2=False):
+    loss_cfg = config["training"]["loss"]
+    if phase2:
+        clf_w = loss_cfg.get("phase2_classification_weight", loss_cfg["classification_weight"])
+        reg_w = loss_cfg.get("phase2_regression_weight",     loss_cfg["regression_weight"])
+    else:
+        clf_w = loss_cfg["classification_weight"]
+        reg_w = loss_cfg["regression_weight"]
+    focal_gamma = loss_cfg.get("focal_gamma", 2.0)
     def d(x): return x.to(device, non_blocking=True) if x is not None else None
 
     labels  = d(batch["label"])
@@ -136,6 +142,7 @@ def process_batch(batch, model, device, config, metrics, class_weights=None):
         outputs, labels, valence, arousal,
         clf_weight=clf_w, reg_weight=reg_w,
         class_weights=class_weights,
+        focal_gamma=focal_gamma,
     )
     pred = outputs["predicted_class"]
     metrics["f1_macro"].update(pred, labels)
@@ -183,7 +190,7 @@ def train_epoch(model, loaders, optimizer, scheduler,
         else:
             batch = next(wrime_it)
 
-        loss = process_batch(batch, model, device, config, metrics, class_weights)
+        loss = process_batch(batch, model, device, config, metrics, class_weights, phase2=phase2)
         (loss / accum).backward()
 
         if (step + 1) % accum == 0:

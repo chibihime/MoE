@@ -116,6 +116,7 @@ def build_dataloaders(
 
     for split in ("train", "val", "test"):
         ravdess_split = "val" if split == "val" else split
+        is_train = split == "train"
 
         wrime = WRIMEDataset(
             split=split if split != "val" else "validation",
@@ -123,13 +124,16 @@ def build_dataloaders(
             max_length=max_length,
             min_intensity=min_intens,
         )
+        aug_cfg    = config.get("data", {}).get("augmentation", {}).get("audio", {})
+        do_augment = aug_cfg.get("enabled", False) and is_train
+        aug_p      = aug_cfg.get("p", 0.5)
         ravdess = RAVDESSDataset(
             data_dir=ravdess_dir,
             split=ravdess_split,
             max_duration_s=max_dur,
+            augment=do_augment,
+            augment_p=aug_p,
         )
-
-        is_train = split == "train"
 
         wrime_sampler = (
             _make_weighted_sampler([s["label"] for s in wrime.samples])

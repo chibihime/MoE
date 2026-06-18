@@ -37,6 +37,7 @@ from data.emotion_mappings import (
     RAVDESS_INTENSITY_MAP,
     emotion_to_va,
 )
+from data.augmentation import augment_audio
 
 TARGET_SAMPLE_RATE = 16_000
 FILENAME_PATTERN   = re.compile(
@@ -91,10 +92,14 @@ class RAVDESSDataset(Dataset):
         train_actors: Optional[List[int]] = None,
         val_actors:   Optional[List[int]] = None,
         test_actors:  Optional[List[int]] = None,
+        augment: bool = False,
+        augment_p: float = 0.5,
     ):
         super().__init__()
         self.max_samples  = int(max_duration_s * TARGET_SAMPLE_RATE)
         self.target_sr    = TARGET_SAMPLE_RATE
+        self.augment      = augment and (split == "train")
+        self.augment_p    = augment_p
 
         train_actors = train_actors or list(range(1, 19))
         val_actors   = val_actors   or [19, 20, 21]
@@ -148,6 +153,13 @@ class RAVDESSDataset(Dataset):
                 orig_freq=sr,
                 new_freq=self.target_sr,
             ).squeeze(0)
+
+        # Apply audio augmentation on train split
+        if self.augment:
+            waveform_np = augment_audio(
+                waveform.numpy(), sample_rate=self.target_sr, p=self.augment_p
+            )
+            waveform = torch.from_numpy(waveform_np)
 
         # Pad or truncate to fixed length
         n = waveform.shape[0]

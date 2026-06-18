@@ -15,14 +15,38 @@ Changes vs original:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, List, Optional
 
 EMOTION_CLASSES: List[str] = [
     "happy", "sad", "angry", "neutral", "anxious", "surprised", "disgusted"
 ]
 
-LABEL_SMOOTHING = 0.1   # redistribute 10% of prob mass — tune down to 0.05
-                         # if val loss starts diverging from train loss
+LABEL_SMOOTHING = 0.1
+
+
+def focal_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    gamma: float = 2.0,
+    weight: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Focal Loss: FL = -(1 - p_t)^gamma * log(p_t)
+
+    Down-weights easy examples so training focuses on the hard minority
+    classes (anxious, disgusted, surprised). gamma=0 recovers plain CE.
+    Label smoothing is applied before the focal modulation.
+    """
+    # Cross-entropy per sample (no reduction), with label smoothing + class weights
+    ce = F.cross_entropy(
+        logits, labels,
+        weight=weight,
+        label_smoothing=LABEL_SMOOTHING,
+        reduction="none",
+    )
+    pt = torch.exp(-ce)                        # probability of the true class
+    return ((1.0 - pt) ** gamma * ce).mean()
 
 
 class EmotionHead(nn.Module):
@@ -79,30 +103,32 @@ class EmotionHead(nn.Module):
     def compute_loss(
         self,
         outputs:         Dict[str, torch.Tensor],
-        labels:          torch.Tensor,                   # (B,) int64
-        valence_targets: torch.Tensor,                   # (B,) float
-        arousal_targets: torch.Tensor,                   # (B,) float
+        labels:          torch.Tensor,
+        valence_targets: torch.Tensor,
+        arousal_targets: torch.Tensor,
         clf_weight:      float = 0.6,
         reg_weight:      float = 0.4,
-        class_weights:   Optional[torch.Tensor] = None,  # (7,) float
+        class_weights:   Optional[torch.Tensor] = None,
+        focal_gamma:     float = 2.0,
     ) -> Dict[str, torch.Tensor]:
         """
         Combined classification + regression loss.
 
-        class_weights: per-class inverse-frequency weights computed in
-            train.py. Still applied on top of label smoothing — they
-            are complementary: weights shift the gradient magnitude per
-            class; smoothing softens the target distribution for all.
-
-        label_smoothing=0.1: instead of a hard [0,…,0,1,0,…,0] target,
-            the true class gets 0.9 + 0.1/7 ≈ 0.914 and each other
-            class gets 0.1/7 ≈ 0.014. This prevents overconfidence and
-            improves generalisation on minority classes.
+        Uses Focal Loss when focal_gamma > 0 (default 2.0) to focus
+        gradient on hard minority classes (anxious, disgusted, surprised).
+        Falls back to plain label-smoothed CrossEntropy when gamma=0.
         """
-        clf_loss = nn.CrossEntropyLoss(
-            weight          = class_weights,
-            label_smoothing = LABEL_SMOOTHING,
-        )(outputs["logits"], labels)
+        if focal_gamma > 0:
+            clf_loss = focal_loss(
+                outputs["logits"], labels,
+                gamma=focal_gamma,
+                weight=class_weights,
+            )
+        else:
+            clf_loss = nn.CrossEntropyLoss(
+                weight=class_weights,
+                label_smoothing=LABEL_SMOOTHING,
+            )(outputs["logits"], labels)
 
         va_pred   = torch.stack([outputs["valence"], outputs["arousal"]], dim=-1)
         va_target = torch.stack([valence_targets, arousal_targets],       dim=-1)
