@@ -36,6 +36,11 @@ def init_pipeline() -> EmotionPipeline:
         config_dir=config_dir,
         device=device,
     )
+
+    thresholds = os.getenv("THRESHOLDS_PATH", "outputs/thresholds.json")
+    if Path(thresholds).exists():
+        _pipeline.load_thresholds(thresholds)
+
     _pipeline.warmup()
     return _pipeline
 
