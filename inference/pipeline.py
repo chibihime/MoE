@@ -243,7 +243,7 @@ class EmotionPipeline:
                 f"Checkpoint not found: {checkpoint}\n"
                 "Train first: python training/train.py"
             )
-        ckpt = torch.load(ckpt_path, map_location=dev, weights_only=False)
+        ckpt = torch.load(ckpt_path, map_location=dev, weights_only=True)
         # Checkpoints saved by train.py wrap weights under "model" key
         state = ckpt.get("model", ckpt)
         model.load_state_dict(state)

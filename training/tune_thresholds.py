@@ -144,7 +144,7 @@ def main():
 
     # Load model
     model = MoEEmotionModel(config).to(device)
-    ckpt  = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    ckpt  = torch.load(args.checkpoint, map_location=device, weights_only=True)
     model.load_state_dict(ckpt.get("model", ckpt))
     model.eval()
     print(f"Loaded checkpoint: {args.checkpoint}")
